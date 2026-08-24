@@ -1,0 +1,67 @@
+# ============ SECRETS / CREDENTIALS — never commit these ============
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sops.yaml
+.sudopw
+sudo*
+
+# ============ PYTHON ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+*.tsbuildinfo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# ============ NODE / FRONTEND ============
+node_modules/
+dist/
+.vite/
+*.local
+
+# ============ MODELS / HEAVY BINARIES (downloaded, not stored in git) ====
+*.onnx
+*.bin
+*.pt
+*.safetensors
+*.gguf
+models/
+checkpoints/
+
+# ============ DATA / DB / AUDIO (recorded in the UI, not in git) ==========
+*.db
+*.sqlite
+*.sqlite3
+data/
+uploads/
+recordings/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+
+# keep small test fixtures that we intentionally commit
+!tests/fixtures/
+!tests/fixtures/**
+
+# ============ EDITOR / OS ============
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.log
+
+# ============ AGENT / RUNTIME ARTIFACTS ============
+.herdr/
+.session/
