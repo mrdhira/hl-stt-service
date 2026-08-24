@@ -1,0 +1,6 @@
+# Runtime deps. Mirrors [project.dependencies] in pyproject.toml — kept as a
+# flat file so the Dockerfile can `pip install -r` without a build backend.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+sherpa-onnx>=1.13.6

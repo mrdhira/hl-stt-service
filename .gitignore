@@ -35,8 +35,8 @@ dist/
 *.pt
 *.safetensors
 *.gguf
-models/
-checkpoints/
+**/models/
+**/checkpoints/
 
 # ============ DATA / DB / AUDIO (recorded in the UI, not in git) ==========
 *.db

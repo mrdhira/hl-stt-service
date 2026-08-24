@@ -1,0 +1,88 @@
+"""POST /transcribe — one-shot decode of an uploaded clip, persisted to `runs`."""
+
+from __future__ import annotations
+
+import time
+
+from anyio import to_thread
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+
+from ..audio import AudioDecodeError, SUPPORTED_NOTE, decode_wav, duration_ms
+from ..config import MODEL_KEYS
+from ..db import db
+from ..metrics import count_chars, count_words, rtf, text_hash
+from ..models import registry, transcribe_samples
+from ..schemas import TranscribeResult
+
+router = APIRouter(tags=["transcribe"])
+
+MODE = "batch"
+
+
+@router.post("/transcribe", response_model=TranscribeResult)
+async def transcribe(
+    model: str = Query(..., description="sensevoice | qwen3 | whisper"),
+    audio: UploadFile = File(..., description=f"WAV upload ({SUPPORTED_NOTE})"),
+) -> TranscribeResult:
+    if model not in MODEL_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown model '{model}'; expected one of {list(MODEL_KEYS)}",
+        )
+    if not registry.is_available(model):
+        info = next(i for i in registry.availability() if i["key"] == model)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": f"model '{model}' is not available on this host",
+                "directory": info["directory"],
+                "missing_files": info["missing_files"],
+                "error": info["error"],
+            },
+        )
+
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty upload")
+
+    try:
+        samples, sample_rate = decode_wav(raw)
+    except AudioDecodeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    if not samples:
+        raise HTTPException(status_code=400, detail="audio contains no samples")
+
+    audio_len_ms = duration_ms(len(samples), sample_rate)
+
+    started = time.perf_counter()
+    try:
+        # Decoding is CPU-bound C++; keep it off the event loop.
+        text = await to_thread.run_sync(transcribe_samples, model, samples, sample_rate)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    processing_ms = (time.perf_counter() - started) * 1000.0
+
+    result = TranscribeResult(
+        model=model,
+        mode=MODE,
+        text=text,
+        audio_ms=audio_len_ms,
+        processing_ms=processing_ms,
+        rtf=rtf(processing_ms, audio_len_ms),
+        words=count_words(text),
+        chars=count_chars(text),
+        text_hash=text_hash(text),
+        sample_rate=sample_rate,
+    )
+    result.run_id = db.insert_run(
+        model=model,
+        mode=MODE,
+        audio_ms=result.audio_ms,
+        processing_ms=result.processing_ms,
+        rtf=result.rtf,
+        words=result.words,
+        chars=result.chars,
+        text=result.text,
+        text_hash=result.text_hash,
+    )
+    return result
