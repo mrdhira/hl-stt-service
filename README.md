@@ -14,28 +14,111 @@ built later.
 
 ## Stack
 
-- **Backend:** Python 3.12 + FastAPI + uvicorn + sherpa-onnx (Qwen3-ASR, SenseVoice, Whisper).
-- **Frontend:** Vite + React + TypeScript.
+- **Backend:** Python 3.12 + FastAPI + uvicorn + sherpa-onnx (SenseVoice, Qwen3-ASR, Whisper).
+- **Frontend:** Vite + React + TypeScript, built to static files.
 - **Persistence:** SQLite (stdlib `sqlite3`), no external DB service.
-- **Deploy:** ONE Docker container; Caddy reverse proxy at `stt.home.arpa` (internal TLS).
+- **Deploy:** ONE Docker container — uvicorn serves both the API and the built SPA — behind
+  Caddy at `stt.home.arpa` (internal TLS).
 
 ## Layout
 
 ```
-backend/    FastAPI app + sherpa-onnx loaders + SQLite
-frontend/   Vite + React + TS UI (model picker, record/send, stream, reports)
-compose.yaml  single-container deployment
-Dockerfile
+backend/            FastAPI app + sherpa-onnx loaders + SQLite
+  app/
+    config.py         env-only settings
+    db.py             thread-safe sqlite3, `runs` table
+    audio.py          WAV -> float32 mono (stdlib, no numpy)
+    metrics.py        words / chars / text_hash / RTF
+    models.py         sherpa-onnx registry: availability + lazy load
+    schemas.py        pydantic response models
+    static.py         serves the built SPA as a 404 fallback
+    routes/           models · transcribe · runs · stream (WS)
+    main.py           app wiring + uvicorn runner
+  tests/            pytest (decode tests skip without model weights)
+frontend/           Vite + React + TS UI (record/send, stream, reports + WER)
+  src/api/            TS mirrors of the backend schemas
+  src/audio/          WAV encoder, mic recorder, live PCM capture
+  src/lib/wer.ts      word error rate
+  src/tabs/           Record & Send · Stream · Reports
+Dockerfile          multi-stage: node builds the SPA, python runs everything
+docker-compose.yml  single service, bind-mounted models + db, healthcheck
+Caddyfile           template for the homelab reverse proxy (tls internal)
+storage/            host volumes — models/ and db/ (git-ignored contents)
 ```
+
+## Run it
+
+### Docker (how it actually deploys)
+
+```bash
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Then put the extracted sherpa-onnx model directories in `./storage/models/`
+(`sensevoice/`, `qwen3/`, `whisper/` — see [backend/README.md](backend/README.md)
+for the exact file names) and either restart or hit `GET /models?rescan=true`.
+The models are downloaded **once** to that host directory; nothing is fetched at
+runtime and the image contains no weights.
+
+Port 8000 is published on loopback only — Caddy is the front door. The container
+runs non-root as uid 1000 to match `./storage`; if your host user is not 1000:
+
+```bash
+APP_UID=$(id -u) APP_GID=$(id -g) docker compose build
+```
+
+### Behind Caddy
+
+`Caddyfile` is a template — copy the `stt.home.arpa` block into your homelab
+Caddyfile, or `import` it. It sets `tls internal`, raises the upload cap, and
+gives the WebSocket a long timeout (a CPU-only decode can hold the connection
+open for minutes).
+
+> **Microphone access needs a secure context.** Over plain HTTP the UI loads but
+> recording silently fails on anything but `localhost`. Use the TLS hostname and
+> trust Caddy's local CA on the client machines.
+
+### Local development
+
+Two processes, with the Vite dev server proxying the API:
+
+```bash
+# backend
+cd backend && .venv/bin/python -m app.main
+
+# frontend
+cd frontend && npm install && npm run dev
+```
+
+See [backend/README.md](backend/README.md) and
+[frontend/README.md](frontend/README.md) for setup, env vars and model layout.
+
+## Tests
+
+```bash
+cd backend && .venv/bin/python -m pytest -q
+cd frontend && npm run build          # tsc -b && vite build
+```
+
+The decode tests skip cleanly when no model weights are present, so the suite is
+green both before and after the multi-GB downloads.
 
 ## Security
 
 - Public repository. No credentials, API keys, private keys, or `.env` values are committed.
   Real config lives in a git-ignored `.env`; `.env.example` holds placeholders only.
 - Large artifacts (models, audio recordings, SQLite DBs) are git-ignored and live on the host.
+- **LAN-only by design: the API has no authentication.** Caddy's `tls internal` provides
+  transport security on the homelab network, not access control. Put an auth layer in front
+  before exposing this anywhere else.
 
 ## Notes
 
 - Realtime audio test cases are recorded in the UI (with an "expected text" field) so each run
   can also report WER.
 - Models are downloaded once to a host volume and kept resident in memory.
+- `mode=stream` rows sum **every** decode, because sherpa-onnx has no streaming recognizer for
+  these three models and the backend re-decodes the buffer on an interval. Compare **RTF** on
+  `mode=batch` rows and **latency** on `mode=stream` rows — see
+  [backend/README.md](backend/README.md#streaming-limitation-read-before-benchmarking-latency).

@@ -51,6 +51,15 @@ class Settings:
             os.environ.get("STT_DB_PATH", "/data/stt-runs.db")
         ).expanduser()
 
+        # Built frontend (Vite `dist/`). One container serves the SPA and the
+        # API from the same origin, so there is no CORS hop in production.
+        # Defaults to <repo>/frontend/dist, which is also the layout inside the
+        # image (/app/backend/app/config.py -> /app/frontend/dist).
+        self.static_dir: Path = Path(
+            os.environ.get("STT_STATIC_DIR", "")
+            or Path(__file__).resolve().parents[2] / "frontend" / "dist"
+        ).expanduser()
+
         # Decoding knobs. "" / "auto" lets SenseVoice detect the language; the
         # POC is English + Japanese so Whisper defaults to auto-detect too.
         self.sensevoice_language: str = os.environ.get("STT_SENSEVOICE_LANGUAGE", "")

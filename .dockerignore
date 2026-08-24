@@ -1,0 +1,63 @@
+# Build context hygiene: keep the image small and the build cache stable.
+
+.git
+.gitignore
+.github
+
+# Installed inside the image, never copied in.
+**/node_modules
+**/.venv
+frontend/dist
+
+# Python caches
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/*.egg-info
+
+# Tooling caches (large)
+**/.npm
+**/.cache
+**/.vite
+
+# Runtime data — lives on the host volume, not in the image.
+storage
+**/models
+**/checkpoints
+**/*.onnx
+**/*.bin
+**/*.pt
+**/*.safetensors
+**/*.gguf
+**/*.db
+**/*.sqlite*
+**/data
+**/uploads
+**/recordings
+**/*.wav
+**/*.mp3
+**/*.m4a
+**/*.flac
+**/*.ogg
+
+# Secrets — belt and braces; .env is git-ignored already.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+
+# Editor / OS
+**/.vscode
+**/.idea
+**/.DS_Store
+**/*.swp
+**/*.log
+
+# Docs and compose don't affect the build.
+Caddyfile
+docker-compose.yml
+README.md

@@ -57,6 +57,9 @@ def client(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("STT_DB_PATH", str(tmp_path / "runs.db"))
     monkeypatch.setenv("STT_MODELS_DIR", str(tmp_path / "models"))
+    # Pin the static dir at a path that does not exist: otherwise the suite
+    # would pass or fail depending on whether frontend/dist has been built.
+    monkeypatch.setenv("STT_STATIC_DIR", str(tmp_path / "no-frontend"))
     for var in ("STT_BACKEND_SENSEVOICE", "STT_BACKEND_QWEN", "STT_BACKEND_WHISPER"):
         monkeypatch.delenv(var, raising=False)
 
@@ -131,3 +134,31 @@ def stub_model_client(client, monkeypatch):
     client.stub_model = key
     client.stub_calls = calls
     return client
+
+
+@pytest.fixture
+def built_frontend(tmp_path, monkeypatch):
+    """A stand-in `frontend/dist` so the SPA mount can be tested.
+
+    Real `npm run build` output is not needed — the mount only cares that
+    `index.html` exists and that sibling files are served verbatim.
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>hl-stt</title><div id=root>")
+    (dist / "assets" / "app.js").write_text("console.log('bundle')")
+    (dist / "favicon.svg").write_text("<svg/>")
+
+    monkeypatch.setenv("STT_STATIC_DIR", str(dist))
+    monkeypatch.setenv("STT_DB_PATH", str(tmp_path / "runs.db"))
+    monkeypatch.setenv("STT_MODELS_DIR", str(tmp_path / "models"))
+
+    for module in [m for m in list(sys.modules) if m == "app" or m.startswith("app.")]:
+        del sys.modules[module]
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    with TestClient(create_app()) as test_client:
+        yield test_client

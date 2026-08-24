@@ -1,0 +1,46 @@
+# Template for the homelab Caddy. The real deployment has its own Caddyfile —
+# copy this block into it, or import this file.
+#
+# `tls internal` issues a cert from Caddy's own local CA. Install that CA on the
+# machines that will use the UI, or the browser blocks the microphone:
+# getUserMedia needs a secure context, so plain http://stt.home.arpa will not
+# record audio.
+#
+#   Caddy in Docker, sharing the app network:
+#     docker network connect hl-stt-net <caddy-container>
+#   then `stt:8000` below resolves to the container.
+#
+#   Caddy on the host instead: change the upstream to 127.0.0.1:8000 to match
+#   the loopback port binding in docker-compose.yml.
+
+stt.home.arpa {
+	tls internal
+
+	encode zstd gzip
+
+	# WS /stream is a normal reverse-proxy upgrade — Caddy handles it with no
+	# extra config. The long timeout is what matters: a CPU-only decode of a
+	# long clip can hold the connection open for minutes.
+	reverse_proxy stt:8000 {
+		flush_interval -1
+
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	# Uploads are whole WAV clips; the default 10 MB cap is tight for a few
+	# minutes of 16 kHz mono audio.
+	request_body {
+		max_size 100MB
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}
+
+# LAN-only by design: no auth, no credentials, no public exposure. If this ever
+# leaves the homelab, put an auth layer here first — the API has none.

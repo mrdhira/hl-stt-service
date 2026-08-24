@@ -13,6 +13,7 @@ from .config import settings
 from .db import db
 from .models import SHERPA_AVAILABLE, SHERPA_IMPORT_ERROR, SHERPA_VERSION, registry
 from .routes import models_router, runs_router, stream_router, transcribe_router
+from .static import mount_spa
 
 logger = logging.getLogger("hl-stt")
 
@@ -76,6 +77,10 @@ def create_app() -> FastAPI:
             "sherpa_onnx": SHERPA_VERSION,
             "models_available": registry.available_keys(),
         }
+
+    # LAST: the SPA mount matches "/" and everything under it, so every API
+    # route above must already be registered or it would be shadowed.
+    mount_spa(app, settings.static_dir)
 
     return app
 

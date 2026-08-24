@@ -38,7 +38,8 @@ tuning knobs.
 | `STT_PORT` | `8000` | bind port |
 | `STT_MODELS_DIR` | `/data/models` | root of the model directories |
 | `STT_NUM_THREADS` | `4` | onnxruntime threads per recognizer |
-| `STT_DB_PATH` | `/data/stt-runs.db` | SQLite file holding `runs` |
+| `STT_DB_PATH` | `/data/stt-runs.db` | SQLite file holding `runs` (compose sets `/data/db/stt-runs.db`) |
+| `STT_STATIC_DIR` | `<repo>/frontend/dist` | built SPA to serve; unset/absent = API only |
 | `STT_PROVIDER` | `cpu` | onnxruntime provider |
 | `STT_SENSEVOICE_LANGUAGE` | `` (auto) | `zh`/`en`/`ja`/`ko`/`yue`/empty |
 | `STT_SENSEVOICE_USE_ITN` | `1` | inverse text normalisation + punctuation |
@@ -60,6 +61,55 @@ Test:
 ```bash
 cd backend && .venv/bin/python -m pytest -q
 ```
+
+## Run with Docker
+
+The whole POC is one container: uvicorn serves the API *and* the built SPA, so
+there is no separate web server and no CORS hop. Build and run from the repo
+root:
+
+```bash
+docker compose up --build -d
+docker compose logs -f stt
+curl -fsS http://127.0.0.1:8000/health
+```
+
+The image is multi-stage — `node:22-alpine` builds `frontend/dist`, then
+`python:3.12-slim` installs `backend/requirements.txt` and copies in the backend
+plus the built SPA. sherpa-onnx ships manylinux wheels, so the runtime stage
+needs no compiler and no extra shared libraries (the only apt package is `curl`,
+for the compose healthcheck).
+
+Inside the image the layout is `/app/backend` (working dir) and
+`/app/frontend/dist`, and these are baked in as defaults:
+
+| var | value in the image |
+|---|---|
+| `STT_MODELS_DIR` | `/data/models` |
+| `STT_DB_PATH` | `/data/db/stt-runs.db` |
+| `STT_STATIC_DIR` | `/app/frontend/dist` |
+| `STT_NUM_THREADS` | `4` |
+
+`docker-compose.yml` bind-mounts `./storage/models` and `./storage/db` onto
+`/data/models` and `/data/db`. **Put the extracted model directories in
+`./storage/models/`** — same layout as below — and the SQLite history survives
+`docker compose down`.
+
+The container runs as non-root (uid **1000** by default, matching a typical homelab
+host user; override with `APP_UID=$(id -u)` at build time). Bind-mounted host directories
+keep their host ownership, so if the container cannot write the database:
+
+```bash
+sudo chown -R 1000:1000 storage/
+```
+
+Port 8000 is published on `127.0.0.1` only — Caddy is the intended front door
+(see `../Caddyfile`). Remove the `127.0.0.1:` prefix in compose to expose it on
+the LAN directly.
+
+> Microphone capture needs a secure context. Over plain HTTP the UI loads but
+> **recording silently fails** on anything other than `localhost` — use Caddy's
+> `tls internal` and trust its CA on the client machines.
 
 ## Where the models live
 
@@ -125,6 +175,14 @@ internally, so the API accepts any input rate.
 | `POST /transcribe?model=<key>` | multipart field `audio` (WAV) + optional field `expected_text`. Returns text + `audio_ms`, `processing_ms`, `rtf`, `words`, `chars`, `text_hash`; persists a `runs` row (`mode=batch`) |
 | `GET /runs?limit=&model=&mode=` | recent rows, newest first |
 | `WS /stream?model=<key>&sample_rate=` | binary raw PCM16 frames (or a WAV frame), text `{"type":"eof", "expected_text": "..."}` to finish. Emits `partial`s then a `final`; persists a `runs` row (`mode=stream`) |
+
+Anything that is *not* one of those paths is handled by the SPA fallback: a real
+file under `STT_STATIC_DIR` is served verbatim, and any other GET returns
+`index.html` so a browser refresh on a client-side route works. It runs as a
+404 fallback rather than a mount at `/`, which keeps API routing precedence
+intact — `GET /transcribe` is still a 405, not a 404 — and unknown paths under
+an API prefix still 404 as JSON instead of returning the HTML shell. With no
+built frontend present the app boots API-only and `/` reports that.
 
 `text_hash` is the sha256 of NFKC-normalised, whitespace-collapsed text, so the
 same transcript from two models collapses to one hash.

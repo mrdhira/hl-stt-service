@@ -1,0 +1,65 @@
+# Single-container deployment. Caddy terminates TLS in front (see ./Caddyfile).
+
+services:
+  stt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Must match the owner of ./storage, or SQLite cannot write the database.
+        # Default 1000 = the first human user on a typical homelab box; override
+        # with `APP_UID=$(id -u) APP_GID=$(id -g) docker compose build`.
+        APP_UID: "${APP_UID:-1000}"
+        APP_GID: "${APP_GID:-1000}"
+    image: hl-stt-services:latest
+    container_name: hl-stt
+    restart: unless-stopped
+
+    environment:
+      # Models are downloaded once to the host volume; nothing is fetched at runtime.
+      STT_MODELS_DIR: /data/models
+      # Must land on the mounted volume, or the benchmark history dies with the container.
+      STT_DB_PATH: /data/db/stt-runs.db
+      STT_NUM_THREADS: "4"
+      STT_STATIC_DIR: /app/frontend/dist
+      # Optional decode knobs — see backend/README.md.
+      # STT_SENSEVOICE_LANGUAGE: ""
+      # STT_WHISPER_LANGUAGE: ""
+      # STT_STREAM_PARTIAL_MS: "1000"
+
+    ports:
+      # Bound to loopback: Caddy is the only thing that should reach it. Drop the
+      # 127.0.0.1 prefix if you want the container exposed on the LAN directly.
+      - "127.0.0.1:8000:8000"
+
+    volumes:
+      # Bind mounts, not named volumes: the models are multi-GB and you want to
+      # see, place and reuse them from the host.
+      - ./storage/models:/data/models
+      - ./storage/db:/data/db
+
+    # 16 GB box shared with other services; SenseVoice int8 + Whisper base fit well
+    # inside 4 GB. Raise if you load Qwen3-ASR (its int8 decoder alone is ~721 MB).
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 1024
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Loading three models on a CPU-only box is slow; don't flap during startup.
+      start_period: 120s
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - stt
+
+networks:
+  stt:
+    # Named so an external Caddy container can join it:
+    #   docker network connect hl-stt-net <caddy-container>
+    name: hl-stt-net

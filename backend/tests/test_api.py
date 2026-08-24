@@ -444,3 +444,71 @@ def test_db_migrates_an_existing_runs_table(tmp_path):
         assert db.recent_runs(limit=1)[0]["expected_text"] == "truth"
     finally:
         db.close()
+
+
+# --- SPA mount ---------------------------------------------------------------
+def test_spa_serves_index_at_root(built_frontend):
+    resp = built_frontend.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "hl-stt" in resp.text
+
+
+def test_spa_serves_static_assets(built_frontend):
+    resp = built_frontend.get("/assets/app.js")
+    assert resp.status_code == 200
+    assert resp.text == "console.log('bundle')"
+    assert built_frontend.get("/favicon.svg").status_code == 200
+
+
+def test_spa_deep_link_falls_back_to_index(built_frontend):
+    """A refresh on a client-side route must return the shell, not a 404."""
+    resp = built_frontend.get("/reports")
+    assert resp.status_code == 200
+    assert "hl-stt" in resp.text
+    assert "<div id=root>" in resp.text
+
+
+def test_api_routes_win_over_the_spa_mount(built_frontend):
+    """The mount is registered at "/" — the API must still match first."""
+    health = built_frontend.get("/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+
+    models = built_frontend.get("/models")
+    assert models.status_code == 200
+    assert [m["key"] for m in models.json()["models"]] == ["sensevoice", "qwen3", "whisper"]
+
+    runs = built_frontend.get("/runs")
+    assert runs.status_code == 200
+    assert runs.json() == {"count": 0, "runs": []}
+
+    # /transcribe is POST-only: GET must be 405 from the router, not the SPA shell.
+    assert built_frontend.get("/transcribe").status_code == 405
+
+
+def test_websocket_still_routes_under_the_spa_mount(built_frontend):
+    with built_frontend.websocket_connect("/stream?model=nope") as ws:
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_unknown_api_path_404s_instead_of_returning_html(built_frontend):
+    """A typo'd endpoint must not come back as a 200 HTML page."""
+    for path in ("/models/typo", "/runs/999", "/health/x", "/openapi.json/x"):
+        resp = built_frontend.get(path)
+        assert resp.status_code == 404, f"{path} returned {resp.status_code}"
+        assert "hl-stt" not in resp.text
+
+
+def test_non_get_on_unknown_path_is_not_the_spa(built_frontend):
+    resp = built_frontend.post("/some/client/route")
+    assert resp.status_code in (404, 405)
+    assert "<div id=root>" not in resp.text
+
+
+def test_api_only_when_frontend_is_not_built(client):
+    """`client` has no STT_STATIC_DIR, so the app must still boot."""
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "api-only"
+    assert client.get("/health").json()["status"] == "ok"
