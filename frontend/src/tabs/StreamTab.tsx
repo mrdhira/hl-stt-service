@@ -150,7 +150,7 @@ export function StreamTab({ models, model, onModelChange, onRunSaved }: Props) {
     <div className="stack">
       <section className="panel">
         <h2>Stream</h2>
-        <div className="row" style={{ alignItems: 'flex-start' }}>
+        <div className="row" style={{ alignItems: 'center' }}>
           <ModelPicker
             models={models}
             value={model}

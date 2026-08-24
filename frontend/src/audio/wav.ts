@@ -9,11 +9,19 @@
 
 /** Target rate: what all three models want, and it keeps uploads small. */
 export const TARGET_SAMPLE_RATE = 16000
+/** Playback rate: high fidelity for the in-UI replay, separate from the ASR path. */
+export const PLAYBACK_SAMPLE_RATE = 48000
 
 export interface WavClip {
   blob: Blob
   sampleRate: number
   durationMs: number
+}
+
+/** One recording, rendered twice: crisp 48 kHz for replay, 16 kHz for the ASR. */
+export interface WavPair {
+  playback: WavClip
+  asr: WavClip
 }
 
 /** Encode mono float samples in [-1, 1] as a 16-bit PCM WAV. */
@@ -93,6 +101,44 @@ export async function blobToWav(
     blob: encodeWav(mono, targetRate),
     sampleRate: targetRate,
     durationMs: (mono.length / targetRate) * 1000,
+  }
+}
+
+/**
+ * Decode the MediaRecorder blob once, then render two WAVs from the same audio:
+ * a crisp 48 kHz one for the in-UI replay and a 16 kHz one for the ASR request.
+ * The 16 kHz decode is fed through an anti-aliased resampler, so the model still
+ * gets clean, model-native audio while playback sounds like the source.
+ */
+export async function blobToWavPair(input: Blob): Promise<WavPair> {
+  const bytes = await input.arrayBuffer()
+  if (bytes.byteLength === 0) throw new Error('recording is empty')
+
+  const decodeCtx = new AudioContext()
+  let decoded: AudioBuffer
+  try {
+    decoded = await decodeCtx.decodeAudioData(bytes)
+  } catch (cause) {
+    throw new Error(
+      `browser could not decode the recording (${input.type || 'unknown type'})`,
+      { cause },
+    )
+  } finally {
+    void decodeCtx.close()
+  }
+
+  const toClip = async (rate: number): Promise<WavClip> => {
+    const mono = await resampleToMono(decoded, rate)
+    return {
+      blob: encodeWav(mono, rate),
+      sampleRate: rate,
+      durationMs: (mono.length / rate) * 1000,
+    }
+  }
+
+  return {
+    playback: await toClip(PLAYBACK_SAMPLE_RATE),
+    asr: await toClip(TARGET_SAMPLE_RATE),
   }
 }
 

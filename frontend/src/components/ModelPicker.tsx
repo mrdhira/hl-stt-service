@@ -19,7 +19,7 @@ export function ModelPicker({ models, value, onChange, disabled, requireStreamin
 
   return (
     <div className="stack" style={{ gap: 8, minWidth: 260 }}>
-      <label className="field">
+      <label className="field inline">
         Model
         <select
           value={value}

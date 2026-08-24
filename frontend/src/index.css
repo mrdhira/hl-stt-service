@@ -107,6 +107,8 @@ body {
 
 /* --- form controls --------------------------------------------------------- */
 label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-dim); }
+label.field.inline { flex-direction: row; align-items: center; gap: 8px; white-space: nowrap; }
+label.field.inline select { width: auto; }
 
 select, input[type='text'], textarea, input[type='number'] {
   background: var(--bg-inset);

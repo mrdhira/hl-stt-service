@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, postTranscribe } from '../api/client'
 import type { ModelInfo, TranscribeResult } from '../api/types'
 import { MicRecorder } from '../audio/recorder'
-import { TARGET_SAMPLE_RATE, blobToWav } from '../audio/wav'
+import { blobToWavPair } from '../audio/wav'
 import type { WavClip } from '../audio/wav'
 import { ModelPicker } from '../components/ModelPicker'
 import { MetricGrid } from '../components/Metrics'
@@ -23,6 +23,7 @@ type Phase = 'idle' | 'recording' | 'converting' | 'sending'
 export function RecordSend({ models, model, onModelChange, onRunSaved }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [clip, setClip] = useState<WavClip | null>(null)
+  const [asrClip, setAsrClip] = useState<WavClip | null>(null)
   const [clipUrl, setClipUrl] = useState<string | null>(null)
   const [expectedText, setExpectedText] = useState('')
   const [result, setResult] = useState<TranscribeResult | null>(null)
@@ -54,6 +55,7 @@ export function RecordSend({ models, model, onModelChange, onRunSaved }: Props) 
 
   const replaceClip = useCallback((next: WavClip | null) => {
     setClip(next)
+    setAsrClip(null)
     setClipUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous)
       return next ? URL.createObjectURL(next.blob) : null
@@ -77,9 +79,11 @@ export function RecordSend({ models, model, onModelChange, onRunSaved }: Props) 
     setPhase('converting')
     try {
       const recording = await recorder.current!.stop()
-      // MediaRecorder gives webm/opus; the backend takes WAV only.
-      const wav = await blobToWav(recording.blob, TARGET_SAMPLE_RATE)
-      replaceClip(wav)
+      // MediaRecorder gives webm/opus; render a crisp 48 kHz WAV for replay and a
+      // 16 kHz WAV for the ASR (the model wants 16 kHz).
+      const pair = await blobToWavPair(recording.blob)
+      replaceClip(pair.playback)
+      setAsrClip(pair.asr)
       setPhase('idle')
     } catch (cause) {
       setPhase('idle')
@@ -88,12 +92,12 @@ export function RecordSend({ models, model, onModelChange, onRunSaved }: Props) 
   }
 
   const send = async () => {
-    if (!clip || !model) return
+    if (!asrClip || !model) return
     setPhase('sending')
     setError(null)
     setResult(null)
     try {
-      const response = await postTranscribe(model, clip.blob, expectedText)
+      const response = await postTranscribe(model, asrClip.blob, expectedText)
       setResult(response)
       onRunSaved()
     } catch (cause) {
@@ -113,7 +117,7 @@ export function RecordSend({ models, model, onModelChange, onRunSaved }: Props) 
     <div className="stack">
       <section className="panel">
         <h2>Record</h2>
-        <div className="row" style={{ alignItems: 'flex-start' }}>
+        <div className="row" style={{ alignItems: 'center' }}>
           <ModelPicker
             models={models}
             value={model}

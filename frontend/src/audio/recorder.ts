@@ -33,7 +33,11 @@ export class MicRecorder {
 
     const mimeType = pickRecorderMimeType()
     this.chunks = []
-    this.recorder = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined)
+    const options: MediaRecorderOptions = mimeType ? { mimeType } : {}
+    // The default opus bitrate is low; raise it so the source we decode is less
+    // lossy before the ASR downsampler runs.
+    options.audioBitsPerSecond = 128000
+    this.recorder = new MediaRecorder(this.stream, options)
     this.recorder.ondataavailable = (event) => {
       if (event.data.size > 0) this.chunks.push(event.data)
     }
