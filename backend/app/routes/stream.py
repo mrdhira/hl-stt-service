@@ -37,7 +37,9 @@ Connect to ``/stream?model=<key>&sample_rate=16000``.
             A frame carrying a full ``RIFF/WAVE`` header is parsed as WAV
             instead, and its own sample rate wins.
   server -> ``{"type": "partial", "text": ..., "elapsed_ms": ..., "audio_ms": ...}``
-  client -> ``{"type": "eof"}`` (text frame) to request the final
+  client -> ``{"type": "eof", "expected_text": "..."}`` (text frame) to request
+            the final. ``expected_text`` is optional ground truth for the clip
+            and is persisted on the run so Reports can compute WER.
   server -> ``{"type": "final", ...}`` — same fields as POST /transcribe
   server -> ``{"type": "error", "detail": ...}`` on any failure
 """
@@ -162,6 +164,7 @@ async def stream(
 
             if kind in ("eof", "final", "close"):
                 eof_at = time.perf_counter()
+                expected = _clean_expected(control.get("expected_text"))
                 if not samples:
                     await _fail(websocket, "no audio received before eof")
                     return
@@ -193,6 +196,7 @@ async def stream(
                     latency_final_ms=latency_final_ms,
                     text=text,
                     text_hash=text_hash(text),
+                    expected_text=expected,
                 )
                 await websocket.send_json(
                     {
@@ -213,6 +217,7 @@ async def stream(
                         "partials_emitted": n_partials,
                         "latency_partial_ms": latency_partial_ms,
                         "latency_final_ms": latency_final_ms,
+                        "expected_text": expected,
                         "run_id": run_id,
                     }
                 )
@@ -243,6 +248,13 @@ def _parse_control(frame: str) -> dict:
         # Tolerate a bare "eof" sentinel from simple clients.
         return {"type": frame.strip().lower()}
     return parsed if isinstance(parsed, dict) else {"type": str(parsed)}
+
+
+def _clean_expected(value) -> str | None:
+    """Ground truth off the control frame; blank or non-string becomes NULL."""
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
 
 
 def _chunk_to_samples(chunk: bytes, rate: int) -> tuple[list[float], int]:

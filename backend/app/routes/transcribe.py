@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from anyio import to_thread
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from ..audio import AudioDecodeError, SUPPORTED_NOTE, decode_wav, duration_ms
 from ..config import MODEL_KEYS
@@ -23,6 +23,9 @@ MODE = "batch"
 async def transcribe(
     model: str = Query(..., description="sensevoice | qwen3 | whisper"),
     audio: UploadFile = File(..., description=f"WAV upload ({SUPPORTED_NOTE})"),
+    expected_text: str | None = Form(
+        None, description="Optional ground truth for this clip; enables WER in Reports"
+    ),
 ) -> TranscribeResult:
     if model not in MODEL_KEYS:
         raise HTTPException(
@@ -40,6 +43,8 @@ async def transcribe(
                 "error": info["error"],
             },
         )
+
+    expected = _clean_expected(expected_text)
 
     raw = await audio.read()
     if not raw:
@@ -73,6 +78,7 @@ async def transcribe(
         chars=count_chars(text),
         text_hash=text_hash(text),
         sample_rate=sample_rate,
+        expected_text=expected,
     )
     result.run_id = db.insert_run(
         model=model,
@@ -84,5 +90,14 @@ async def transcribe(
         chars=result.chars,
         text=result.text,
         text_hash=result.text_hash,
+        expected_text=result.expected_text,
     )
     return result
+
+
+def _clean_expected(value: str | None) -> str | None:
+    """Blank form fields arrive as "" — store NULL, not an empty string."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None

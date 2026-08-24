@@ -122,15 +122,24 @@ internally, so the API accepts any input rate.
 |---|---|
 | `GET /health` | liveness + which models loaded |
 | `GET /models` | availability of all three; `?rescan=true` re-stats the dir |
-| `POST /transcribe?model=<key>` | multipart field `audio` (WAV). Returns text + `audio_ms`, `processing_ms`, `rtf`, `words`, `chars`, `text_hash`; persists a `runs` row (`mode=batch`) |
+| `POST /transcribe?model=<key>` | multipart field `audio` (WAV) + optional field `expected_text`. Returns text + `audio_ms`, `processing_ms`, `rtf`, `words`, `chars`, `text_hash`; persists a `runs` row (`mode=batch`) |
 | `GET /runs?limit=&model=&mode=` | recent rows, newest first |
-| `WS /stream?model=<key>&sample_rate=` | binary raw PCM16 frames (or a WAV frame), text `{"type":"eof"}` to finish. Emits `partial`s then a `final`; persists a `runs` row (`mode=stream`) |
+| `WS /stream?model=<key>&sample_rate=` | binary raw PCM16 frames (or a WAV frame), text `{"type":"eof", "expected_text": "..."}` to finish. Emits `partial`s then a `final`; persists a `runs` row (`mode=stream`) |
 
 `text_hash` is the sha256 of NFKC-normalised, whitespace-collapsed text, so the
 same transcript from two models collapses to one hash.
 
 `words` counts whitespace-separated tokens **plus** each CJK/kana character —
 Japanese has no spaces, so plain splitting would report ~1 word per utterance.
+The frontend's WER tokenizer mirrors this exactly, so the `words` column and the
+WER denominator count the same units.
+
+`expected_text` is optional ground truth for a clip. Supplying it turns a
+recording into a reusable **test case**: it is stored on the run (nullable
+column) and the Reports view scores WER against it. WER itself is *not* stored —
+it is computed from `text` + `expected_text` on read, so the tokenizer can change
+without a migration. Databases created before this column gain it automatically
+via an `ALTER TABLE` on connect.
 
 ## Streaming limitation (read before benchmarking latency)
 

@@ -350,3 +350,97 @@ def test_stream_accepts_wav_frames_too(stub_model_client):
         assert message["type"] == "final"
         assert message["sample_rate"] == 8000
         assert message["audio_ms"] == pytest.approx(1500.0, abs=5.0)
+
+
+# --- expected_text / test-case tagging ---------------------------------------
+def test_transcribe_persists_expected_text(stub_model_client, tiny_wav):
+    client = stub_model_client
+    resp = client.post(
+        "/transcribe",
+        params={"model": client.stub_model},
+        files={"audio": ("tiny.wav", tiny_wav, "audio/wav")},
+        data={"expected_text": "  hello there world  "},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["expected_text"] == "hello there world"
+
+    row = client.get("/runs").json()["runs"][0]
+    assert row["expected_text"] == "hello there world"
+
+
+def test_transcribe_blank_expected_text_stores_null(stub_model_client, tiny_wav):
+    client = stub_model_client
+    resp = client.post(
+        "/transcribe",
+        params={"model": client.stub_model},
+        files={"audio": ("tiny.wav", tiny_wav, "audio/wav")},
+        data={"expected_text": "   "},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["expected_text"] is None
+    assert client.get("/runs").json()["runs"][0]["expected_text"] is None
+
+
+def test_transcribe_without_expected_text_still_works(stub_model_client, tiny_wav):
+    client = stub_model_client
+    resp = client.post(
+        "/transcribe",
+        params={"model": client.stub_model},
+        files={"audio": ("tiny.wav", tiny_wav, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["expected_text"] is None
+
+
+def test_stream_persists_expected_text(stub_model_client):
+    client = stub_model_client
+    pcm = make_wav(duration_s=1.5)[44:]
+
+    with client.websocket_connect(
+        f"/stream?model={client.stub_model}&sample_rate=16000"
+    ) as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(pcm)
+        ws.send_text(json.dumps({"type": "eof", "expected_text": "  hello world  "}))
+
+        message = ws.receive_json()
+        while message["type"] == "partial":
+            message = ws.receive_json()
+        assert message["type"] == "final"
+        assert message["expected_text"] == "hello world"
+
+    row = client.get("/runs", params={"mode": "stream"}).json()["runs"][0]
+    assert row["expected_text"] == "hello world"
+
+
+def test_db_migrates_an_existing_runs_table(tmp_path):
+    """A pre-expected_text database gains the column instead of blowing up."""
+    import sqlite3
+
+    from app.db import Database
+
+    path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, "
+        "model TEXT NOT NULL, mode TEXT NOT NULL, audio_ms REAL, processing_ms REAL, "
+        "rtf REAL, words INTEGER, chars INTEGER, latency_partial_ms REAL, "
+        "latency_final_ms REAL, text TEXT, text_hash TEXT)"
+    )
+    legacy.execute(
+        "INSERT INTO runs (ts, model, mode, text) VALUES (1.0, 'whisper', 'batch', 'old row')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    db = Database(path)
+    db.connect()
+    try:
+        rows = db.recent_runs(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["expected_text"] is None  # column added, old row back-filled NULL
+
+        db.insert_run(model="qwen3", mode="batch", text="new", expected_text="truth")
+        assert db.recent_runs(limit=1)[0]["expected_text"] == "truth"
+    finally:
+        db.close()

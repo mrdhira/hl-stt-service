@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS runs (
     latency_partial_ms REAL,
     latency_final_ms   REAL,
     text               TEXT,
-    text_hash          TEXT
+    text_hash          TEXT,
+    expected_text      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_ts    ON runs (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_model ON runs (model, ts DESC);
@@ -49,7 +50,20 @@ _COLUMNS = (
     "latency_final_ms",
     "text",
     "text_hash",
+    "expected_text",
 )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns that post-date the original CREATE TABLE.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op on a database created before a
+    column was added, so new columns need an explicit ALTER.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    for column, ddl in (("expected_text", "TEXT"),):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {ddl}")
 
 
 class Database:
@@ -73,6 +87,7 @@ class Database:
                     conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.executescript(SCHEMA)
+                _migrate(conn)
                 conn.commit()
                 self._conn = conn
             return self._conn
@@ -98,6 +113,7 @@ class Database:
         latency_final_ms: float | None = None,
         text: str | None = None,
         text_hash: str | None = None,
+        expected_text: str | None = None,
         ts: float | None = None,
     ) -> int:
         """Insert one run and return its rowid."""
@@ -114,6 +130,7 @@ class Database:
             latency_final_ms,
             text,
             text_hash,
+            expected_text,
         )
         placeholders = ", ".join("?" * len(_COLUMNS))
         sql = f"INSERT INTO runs ({', '.join(_COLUMNS)}) VALUES ({placeholders})"

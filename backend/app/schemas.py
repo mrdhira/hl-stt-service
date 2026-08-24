@@ -48,6 +48,9 @@ class TranscribeResult(BaseModel):
     latency_final_ms: float | None = Field(
         default=None, description="Time from end-of-audio to the final (stream mode only)"
     )
+    expected_text: str | None = Field(
+        default=None, description="Ground truth supplied by the caller, for WER"
+    )
     run_id: int | None = Field(default=None, description="rowid of the persisted runs row")
 
 
@@ -67,6 +70,7 @@ class RunRow(BaseModel):
     latency_final_ms: float | None = None
     text: str | None = None
     text_hash: str | None = None
+    expected_text: str | None = None
 
 
 class RunsResponse(BaseModel):
