@@ -28,9 +28,10 @@ services:
       # STT_STREAM_PARTIAL_MS: "1000"
 
     ports:
-      # TEMP for the try: exposed on the LAN so it's reachable from other devices.
-      # Restore 127.0.0.1:8000:8000 when done (Caddy will be the only front door).
-      - "0.0.0.0:8000:8000"
+      # Secured: bound to the docker gateway (172.18.0.1) — reachable by Caddy on the
+      # proxy net, but NOT on the raw LAN. LAN port 8000 is closed. stt.home.arpa is
+      # the only front door (Caddy). See ~/docker/caddy/Caddyfile (stt block).
+      - "172.18.0.1:8000:8000"
 
     volumes:
       # Bind mounts, not named volumes: the models are multi-GB and you want to
