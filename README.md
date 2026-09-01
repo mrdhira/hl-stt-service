@@ -71,7 +71,7 @@ and returns `{ text, model, audio_ms, processing_ms, rtf, run_id }`. See
 
 ```bash
 docker compose up --build -d
-curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://172.18.0.1:8000/health   # or just: docker compose ps
 ```
 
 Then put the extracted sherpa-onnx model directories in `./storage/models/`
@@ -80,8 +80,13 @@ for the exact file names) and either restart or hit `GET /models?rescan=true`.
 The models are downloaded **once** to that host directory; nothing is fetched at
 runtime and the image contains no weights.
 
-Port 8000 is published on loopback only — Caddy is the front door. The container
-runs non-root as uid 1000 to match `./storage`; if your host user is not 1000:
+Port 8000 is bound to the **docker gateway** (`172.18.0.1`), not to the LAN and
+not to `0.0.0.0`: Caddy reaches it over the proxy network, but raw port 8000 is
+closed on the host's LAN address. `stt.home.arpa` via Caddy is the only front
+door.
+
+The container runs non-root as uid 1000 to match `./storage`; if your host user
+is not 1000:
 
 ```bash
 APP_UID=$(id -u) APP_GID=$(id -g) docker compose build

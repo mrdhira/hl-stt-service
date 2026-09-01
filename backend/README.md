@@ -72,7 +72,7 @@ root:
 ```bash
 docker compose up --build -d
 docker compose logs -f stt
-curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://172.18.0.1:8000/health   # or just: docker compose ps
 ```
 
 The image is multi-stage — `node:22-alpine` builds `frontend/dist`, then
@@ -105,9 +105,10 @@ keep their host ownership, so if the container cannot write the database:
 sudo chown -R 1000:1000 storage/
 ```
 
-Port 8000 is published on `127.0.0.1` only — Caddy is the intended front door
-(see `../Caddyfile`). Remove the `127.0.0.1:` prefix in compose to expose it on
-the LAN directly.
+Port 8000 is bound to the **docker gateway** (`172.18.0.1`), not to the LAN and
+not to `0.0.0.0`: Caddy reaches it over the proxy network, but raw port 8000 is
+closed on the host's LAN address. `stt.home.arpa` via Caddy is the only front
+door. See `../Caddyfile`.
 
 > Microphone capture needs a secure context. Over plain HTTP the UI loads but
 > **recording silently fails** on anything other than `localhost` — use Caddy's
