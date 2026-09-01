@@ -43,9 +43,11 @@ def test_pronunciation_map_is_not_fuzzy():
     from app.metrics import PRONUNCIATION_EQUIV, apply_pronunciation_equiv as apply
 
     assert PRONUNCIATION_EQUIV == {"dhira": "dira"}
-    # "Dila" is a genuine recognition error and must survive normalisation.
-    assert apply("Dila") == "Dila"
-    assert apply("Dira") == "Dira"
+    # Normalisation lowercases (NFKC + lower, mirroring the frontend), but
+    # "Dila" is a genuine recognition error and must NOT be equated to "dira".
+    assert apply("Dila") == "dila"
+    assert apply("Dira") == "dira"
+    assert apply("Dila") != apply("Dhira")
 
 
 # --- 2 + 3. POST /asr and dataset capture ------------------------------------
@@ -117,7 +119,10 @@ def test_asr_archives_the_clip_to_the_dataset(stub_model_client, tiny_wav, tmp_p
     assert archived.read_bytes() == tiny_wav
 
     row = client.get("/runs", params={"mode": "asr"}).json()["runs"][0]
-    assert row["audio_path"] == str(archived)
+    # Bare filename only — an absolute server path would leak the host layout
+    # through the unauthenticated GET /runs.
+    assert row["audio_path"] == f"{body['run_id']}.wav"
+    assert "/" not in row["audio_path"]
 
 
 def test_transcribe_also_archives_the_clip(stub_model_client, tiny_wav, tmp_path):
@@ -131,9 +136,9 @@ def test_transcribe_also_archives_the_clip(stub_model_client, tiny_wav, tmp_path
 
     archived = tmp_path / "dataset" / f"{body['run_id']}.wav"
     assert archived.is_file()
-    assert body["audio_path"] == str(archived)
+    assert body["audio_path"] == f"{body['run_id']}.wav"
     row = client.get("/runs").json()["runs"][0]
-    assert row["audio_path"] == str(archived)
+    assert row["audio_path"] == f"{body['run_id']}.wav"
     assert row["expected_text"] == "hello world"
 
 
@@ -282,8 +287,8 @@ def test_db_migrates_audio_path_onto_an_existing_table(tmp_path):
         assert rows[0]["audio_path"] is None  # added, back-filled NULL
 
         run_id = db.insert_run(model="sensevoice", mode="asr", text="new")
-        db.set_audio_path(run_id, "/data/dataset/2.ogg")
-        assert db.get_run(run_id)["audio_path"] == "/data/dataset/2.ogg"
+        db.set_audio_path(run_id, f"{run_id}.ogg")
+        assert db.get_run(run_id)["audio_path"] == f"{run_id}.ogg"
 
         assert db.update_expected_text(run_id, "truth") is True
         assert db.get_run(run_id)["expected_text"] == "truth"

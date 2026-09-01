@@ -21,6 +21,14 @@ _DIR_ENV_VAR: dict[str, str] = {
 }
 
 
+def _list_env(name: str, default: list[str]) -> list[str]:
+    """Comma-separated env var to a list. Empty string means an empty list."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -80,6 +88,36 @@ class Settings:
         self.stream_sample_rate: int = _int_env("STT_STREAM_SAMPLE_RATE", 16000)
 
         self.provider: str = os.environ.get("STT_PROVIDER", "cpu")
+
+        # --- upload limits -------------------------------------------------
+        # Decoding amplifies hugely: a 221 KB Opus file expands to ~19 MB of
+        # PCM, and turning that into a Python float list costs ~307 MB — about
+        # 1400x the upload. Unauthenticated callers therefore need two ceilings,
+        # one on the bytes accepted and one on the *decoded* duration, checked
+        # before any float conversion happens.
+        #
+        # 25 MB is far more than a voice note (minutes of Opus) but small enough
+        # that even a pathological compression ratio cannot exhaust the 4 GB the
+        # container is limited to.
+        self.max_upload_bytes: int = _int_env("STT_MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
+        # 10 minutes of audio. At 16 kHz mono that is ~19 MB of PCM and ~300 MB
+        # as floats — the practical worst case we are willing to allocate.
+        self.max_audio_seconds: float = float(_int_env("STT_MAX_AUDIO_SECONDS", 600))
+
+        # --- CORS ----------------------------------------------------------
+        # One container serves the SPA and the API from the same origin, so the
+        # browser makes no cross-origin request in production and this list can
+        # stay empty there. It exists for `npm run dev`, where Vite serves the
+        # UI from another port.
+        #
+        # Deliberately NOT "*": /asr and PATCH /runs/{id} mutate state and there
+        # is no auth, so a wildcard would let any page a LAN user happens to
+        # visit rewrite their ground truth or drive transcription. Set
+        # STT_CORS_ORIGINS to a comma-separated list to override.
+        self.cors_origins: list[str] = _list_env(
+            "STT_CORS_ORIGINS",
+            ["http://localhost:5173", "http://127.0.0.1:5173"],
+        )
 
     def model_dir(self, key: str) -> Path:
         """Directory holding the files for ``key``.

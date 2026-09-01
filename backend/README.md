@@ -41,6 +41,9 @@ tuning knobs.
 | `STT_DB_PATH` | `/data/stt-runs.db` | SQLite file holding `runs` (compose sets `/data/db/stt-runs.db`) |
 | `STT_STATIC_DIR` | `<repo>/frontend/dist` | built SPA to serve; unset/absent = API only |
 | `STT_DATASET_DIR` | `/data/dataset` | where incoming clips are archived as training data |
+| `STT_MAX_UPLOAD_BYTES` | `26214400` (25 MB) | largest accepted upload; over it is `413` |
+| `STT_MAX_AUDIO_SECONDS` | `600` (10 min) | longest accepted *decoded* audio; over it is `413` |
+| `STT_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | allowed browser origins; empty disables CORS entirely |
 | `STT_PROVIDER` | `cpu` | onnxruntime provider |
 | `STT_SENSEVOICE_LANGUAGE` | `` (auto) | `zh`/`en`/`ja`/`ko`/`yue`/empty |
 | `STT_SENSEVOICE_USE_ITN` | `1` | inverse text normalisation + punctuation |
@@ -194,8 +197,13 @@ same transcript from two models collapses to one hash.
 
 `words` counts whitespace-separated tokens **plus** each CJK/kana character —
 Japanese has no spaces, so plain splitting would report ~1 word per utterance.
-The frontend's WER tokenizer mirrors this exactly, so the `words` column and the
-WER denominator count the same units.
+
+The frontend's WER tokenizer applies the **same** normalisation (NFKC, lowercase,
+`PRONUNCIATION_EQUIV`) so both sides see identical text, but the two counts are
+**close, not identical**: the WER tokenizer strips punctuation before splitting
+and `count_words` does not. `count_words("dhira-san")` is 1 while the WER
+tokenizer yields 2. Treat `words` as an approximate size and the WER denominator
+as the authoritative token count for scoring.
 
 `expected_text` is optional ground truth for a clip. Supplying it turns a
 recording into a reusable **test case**: it is stored on the run (nullable
@@ -237,9 +245,34 @@ covers English + Japanese in one model with no language hint. Override with
 curl -sS -X POST 'http://stt.home.arpa/asr' -F 'audio=@voice.ogg'
 ```
 
-Errors match the rest of the API: `400` unknown model or empty upload, `415`
-undecodable audio (the message names the formats that work), `503` when the
-model has no files on disk.
+Errors match the rest of the API: `400` unknown model or empty upload, `413`
+too large or too long (see the limits below), `415` undecodable audio (the
+message names the formats that work), `503` when the model has no files on disk.
+
+### Limits
+
+The endpoint is unauthenticated and decoding amplifies enormously — a 221 KB
+Opus file expands to ~19 MB of PCM, and converting that to the Python float list
+sherpa-onnx needs costs ~307 MB, roughly **1400x the upload**. Two ceilings
+bound it, and both return `413`:
+
+| limit | default | enforced |
+|---|---|---|
+| `STT_MAX_UPLOAD_BYTES` | 25 MB | on the received bytes, not `Content-Length` |
+| `STT_MAX_AUDIO_SECONDS` | 600 s | on the decoded sample count, **before** any float conversion |
+
+The duration check is the load-bearing one: it reads the frame count from the
+container header (or bounds ffmpeg's output with `-t`), so an over-long file is
+rejected without ever materialising the floats. A 15-minute Opus upload is
+refused in ~0 ms with under 1 MB of allocation.
+
+ffmpeg additionally runs with `-protocol_whitelist file` and a demuxer pinned
+from our own magic-byte sniff, so a hostile container cannot steer ffmpeg's
+input layer or make it fetch a remote URL.
+
+Caddy's `request_body max_size` is a separate, coarser limit in front of all
+this — keep it at or above `STT_MAX_UPLOAD_BYTES` or uploads fail at the proxy
+with a less helpful error.
 
 ### Accepted audio
 
@@ -281,8 +314,14 @@ PRONUNCIATION_EQUIV: dict[str, str] = {
 }
 ```
 
-`frontend/src/lib/wer.ts` holds an identical map — **change both together**, and
-the tokenizer-parity check keeps them honest.
+`frontend/src/lib/wer.ts` holds an identical map — **change both together**.
+There is no automated check that they agree: the frontend has no test runner, so
+the two are kept in sync by convention and the cross-referencing comments on
+each. Both sides apply NFKC + lowercase before matching and use equivalent
+word-boundary classes (`[^\W\d_]+` in Python, `/\p{L}+/u` in JS), which was
+verified by hand across fullwidth, decomposed-accent, digit-suffixed and
+underscore-joined inputs. `scripts/migrate_pronunciation.py` imports the map and
+the word regex directly from `app.metrics`, so the script at least cannot drift.
 
 Deliberately **explicit, not fuzzy**: no edit-distance threshold, no phonetic
 algorithm. Those would hide real recognition errors. Only exact whole words in
@@ -314,9 +353,32 @@ storage/dataset/41.ogg   <- audio
 runs.id = 41             -> expected_text = "what was actually said"
 ```
 
+Only the **bare filename** is stored in `audio_path` (`41.ogg`, not
+`/data/dataset/41.ogg`) — `GET /runs` is unauthenticated and an absolute path
+would disclose the host layout. Resolve it with `dataset.resolve()` server-side.
+The extension comes from the sniffed container and never from the upload's
+filename, so a caller cannot choose what the archived file is named.
+
 Writing is **best-effort by design**: a full disk or read-only mount logs a
 warning and leaves `audio_path` NULL rather than failing a good transcription.
-`storage/dataset/` is git-ignored; it holds recordings of real people.
+The same applies to a filename collision — if a clip already occupies that run
+id (which happens when the database is reset while `storage/dataset/` survives,
+so ids restart at 1), the run is left with `audio_path` NULL rather than being
+linked to an older run's audio. A missing label beats a wrong one in a corpus
+you intend to train on.
+
+`storage/dataset/` is git-ignored; it holds recordings of real people. It has
+**no quota or retention policy** — every clip is kept forever, so watch the
+volume.
+
+### CORS
+
+`STT_CORS_ORIGINS` is a comma-separated allowlist, **not** a wildcard. `/asr`
+and `PATCH /runs/{id}` mutate state and the API has no authentication, so `*`
+would let any page a LAN user happens to visit rewrite their ground truth or
+drive transcription from the browser they already have open. In production the
+SPA and API share an origin, so no cross-origin request happens at all and the
+list can be set empty; the default exists for `npm run dev`.
 
 ## Streaming limitation (read before benchmarking latency)
 

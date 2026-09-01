@@ -61,14 +61,21 @@ def create_app() -> FastAPI:
     )
 
     # The Vite dev server talks to this API from another origin; in production
-    # Caddy serves both from stt.home.arpa so this is a no-op.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # one container serves the SPA and the API together, so no cross-origin
+    # request happens at all and this list can be empty.
+    #
+    # Explicitly NOT a wildcard. /asr and PATCH /runs/{id} mutate state and the
+    # API has no authentication, so "*" would let any page a LAN user visits
+    # rewrite their ground truth or drive transcription from the browser they
+    # already have open. Configure with STT_CORS_ORIGINS.
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+            allow_headers=["Content-Type"],
+        )
 
     app.include_router(models_router)
     app.include_router(transcribe_router)

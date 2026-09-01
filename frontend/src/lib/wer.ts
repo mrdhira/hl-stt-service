@@ -1,10 +1,16 @@
 /**
  * Word error rate.
  *
- * Tokenisation mirrors `count_words` in backend/app/metrics.py: Japanese has no
+ * Tokenisation follows `count_words` in backend/app/metrics.py: Japanese has no
  * spaces, so each CJK/kana character is its own token and the rest is split on
- * whitespace. Keeping the two in sync means the `words` column and the WER
- * denominator count the same things.
+ * whitespace. Both sides apply the same NFKC + lowercase + PRONUNCIATION_EQUIV
+ * normalisation first, so the same input yields the same tokens.
+ *
+ * They are close but NOT identical, and the difference is punctuation: this
+ * tokenizer strips it before splitting, `count_words` does not. So
+ * `count_words("dhira-san")` is 1 while `tokenize("dhira-san")` is 2. Treat the
+ * `words` column as an approximate size and the WER denominator
+ * (`referenceLength`) as the authoritative token count for scoring.
  */
 
 // CJK ideographs, hiragana, katakana, halfwidth katakana — same ranges as the
@@ -40,6 +46,11 @@ export const PRONUNCIATION_EQUIV: Record<string, string> = {
 // A "word" for equivalence purposes: a run of letters, no digits or
 // punctuation, so only whole tokens are rewritten. Substring matching would
 // turn an unrelated word like "dhirama" into "dirama".
+//
+// Reconciled with the backend's `[^\W\d_]+`: Python excludes digits and
+// underscore explicitly and matches letters only — combining marks are not
+// word characters there either — so the two classes agree. Verified on
+// fullwidth, decomposed-accent, digit-suffixed and underscore-joined inputs.
 const WORD = /\p{L}+/gu
 
 /** Rewrite orthographic spellings to their spoken form. Whole words only. */

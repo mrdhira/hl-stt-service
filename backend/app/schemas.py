@@ -82,11 +82,18 @@ class RunsResponse(BaseModel):
     runs: list[RunRow]
 
 
+#: Ceiling for caller-supplied ground truth. Generous for a spoken utterance
+#: (roughly 1500 words) but bounded, because the endpoints that accept it are
+#: unauthenticated and write straight to SQLite.
+MAX_EXPECTED_TEXT = 10_000
+
+
 class ExpectedTextUpdate(BaseModel):
     """Body of PATCH /runs/{id} — correcting a run's ground truth by hand."""
 
     expected_text: str | None = Field(
         default=None,
+        max_length=MAX_EXPECTED_TEXT,
         description="New ground truth. Empty or omitted clears it (stored NULL).",
     )
 

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import shutil
 import sqlite3
 import sys
 import time
@@ -31,18 +30,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings  # noqa: E402
-from app.metrics import PRONUNCIATION_EQUIV  # noqa: E402
+from app.metrics import _WORD, PRONUNCIATION_EQUIV, normalise_for_compare  # noqa: E402
 
 
-def _checkpoint(conn: sqlite3.Connection) -> None:
-    """Fold the WAL back into the main database file.
+def _checkpoint(conn: sqlite3.Connection) -> bool:
+    """Fold the WAL back into the main database file. True if it fully ran.
 
     Without this the updates live only in the -wal sidecar. SQLite reads the two
     together so the data looks right, but anyone who copies `stt-runs.db` on its
     own (a backup script, `docker cp`) silently gets the pre-migration rows.
+
+    The result is NOT ignored: `wal_checkpoint` returns `(busy, log, checkpointed)`
+    and reports `busy=1` when another connection holds a read lock — which is
+    the normal case when the container is running. Treating that as success is
+    exactly how the stale-copy problem survives the fix meant to prevent it.
     """
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.commit()
+    row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    # (busy, log_frames, checkpointed_frames); busy != 0 means it gave up.
+    return bool(row) and row[0] == 0
 
 
 def spoken_form(match: re.Match[str], replacement: str) -> str:
@@ -56,11 +62,23 @@ def spoken_form(match: re.Match[str], replacement: str) -> str:
 
 
 def rewrite(text: str) -> str:
-    """Apply every equivalence to whole words in `text`."""
-    for orthographic, spoken in PRONUNCIATION_EQUIV.items():
-        pattern = re.compile(rf"\b{re.escape(orthographic)}\b", re.IGNORECASE)
-        text = pattern.sub(lambda m, s=spoken: spoken_form(m, s), text)
-    return text
+    """Apply every equivalence to whole words in `text`, preserving case.
+
+    Uses the scorer's own `_WORD` class rather than `\b`, which would treat
+    digits and underscores as word characters and disagree with it: `\b` leaves
+    "Dhira2" and "dhira_x" alone while the scorer rewrites both. Matching the
+    scorer means the stored ground truth and the scored tokens agree.
+
+    Unlike the scorer this keeps the surrounding text as written — this output
+    is read by humans in the Reports table, not just compared.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        word = match.group(0)
+        spoken = PRONUNCIATION_EQUIV.get(normalise_for_compare(word))
+        return word if spoken is None else spoken_form(match, spoken)
+
+    return _WORD.sub(replace, text)
 
 
 def main() -> int:
@@ -85,16 +103,15 @@ def main() -> int:
     rows = conn.execute(
         "SELECT id, expected_text FROM runs WHERE expected_text IS NOT NULL"
     ).fetchall()
-    changes = [
-        (row["id"], row["expected_text"], rewrite(row["expected_text"]))
-        for row in rows
-        if rewrite(row["expected_text"]) != row["expected_text"]
-    ]
+    changes = []
+    for row in rows:
+        after = rewrite(row["expected_text"])
+        if after != row["expected_text"]:
+            changes.append((row["id"], row["expected_text"], after))
 
     if not changes:
+        # Deliberately no checkpoint here: "nothing to do" must not write.
         print("nothing to do — ground truth already uses the spoken form")
-        if not args.dry_run:
-            _checkpoint(conn)
         conn.close()
         return 0
 
@@ -106,10 +123,13 @@ def main() -> int:
         conn.close()
         return 0
 
-    # Checkpoint first so the backup is a complete copy, not a stale snapshot.
-    _checkpoint(conn)
+    # Back up with SQLite's own backup API rather than copying the file. It
+    # snapshots the database *including* anything sitting in the WAL, so the
+    # backup is consistent even while the container holds a read lock — the case
+    # where a plain shutil.copy2 of the main file silently produces a stale copy.
     backup = db_path.with_suffix(f"{db_path.suffix}.{time.strftime('%Y%m%d%H%M%S')}.bak")
-    shutil.copy2(db_path, backup)
+    with sqlite3.connect(str(backup)) as target:
+        conn.backup(target)
     print(f"\nbackup: {backup}")
 
     conn.executemany(
@@ -117,10 +137,21 @@ def main() -> int:
         [(after, run_id) for run_id, _, after in changes],
     )
     conn.commit()
-    _checkpoint(conn)
+    checkpointed = _checkpoint(conn)
     conn.close()
 
     print(f"updated {len(changes)} row(s)")
+    if not checkpointed:
+        print(
+            "\nWARNING: could not checkpoint the WAL — another connection holds a\n"
+            "read lock (the container is probably running). The data IS committed\n"
+            "and correct when read through SQLite, but the -wal sidecar still holds\n"
+            "part of it: copying stt-runs.db on its own would produce PRE-migration\n"
+            "rows. Either copy stt-runs.db-wal and -shm alongside it, or stop the\n"
+            "service and re-run this script to fold the WAL back in.",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 

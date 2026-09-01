@@ -377,8 +377,13 @@ function ExpectedCell({
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           // Enter inserts a newline; Ctrl/Cmd+Enter saves, Escape discards.
-          if (event.key === 'Escape') onCancel()
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onCancel()
+          }
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            // Without this the textarea also inserts a newline behind the save.
+            event.preventDefault()
             onSave(run.id, draft)
           }
         }}
