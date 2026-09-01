@@ -20,10 +20,11 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-# curl is here only for the compose healthcheck; sherpa-onnx ships manylinux
-# wheels, so it needs no build toolchain and no extra shared libraries.
+# curl: the compose healthcheck. ffmpeg: POST /asr decodes webm/opus and mp4,
+# which libsndfile cannot read (no Matroska demuxer). sherpa-onnx and soundfile
+# both ship manylinux wheels, so no build toolchain is needed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
@@ -34,6 +35,7 @@ ENV PYTHONUNBUFFERED=1 \
     STT_PORT=8000 \
     STT_MODELS_DIR=/data/models \
     STT_DB_PATH=/data/db/stt-runs.db \
+    STT_DATASET_DIR=/data/dataset \
     STT_STATIC_DIR=/app/frontend/dist \
     STT_NUM_THREADS=4
 
@@ -59,7 +61,7 @@ ARG APP_GID=1000
 RUN groupadd --gid ${APP_GID} appuser 2>/dev/null || true \
     && useradd --uid ${APP_UID} --gid ${APP_GID} --create-home \
         --shell /usr/sbin/nologin appuser 2>/dev/null || true \
-    && mkdir -p /data/models /data/db \
+    && mkdir -p /data/models /data/db /data/dataset \
     && chown -R ${APP_UID}:${APP_GID} /app /data
 USER ${APP_UID}:${APP_GID}
 

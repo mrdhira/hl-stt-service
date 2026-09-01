@@ -12,7 +12,13 @@ from . import __version__
 from .config import settings
 from .db import db
 from .models import SHERPA_AVAILABLE, SHERPA_IMPORT_ERROR, SHERPA_VERSION, registry
-from .routes import models_router, runs_router, stream_router, transcribe_router
+from .routes import (
+    asr_router,
+    models_router,
+    runs_router,
+    stream_router,
+    transcribe_router,
+)
 from .static import mount_spa
 
 logger = logging.getLogger("hl-stt")
@@ -66,6 +72,7 @@ def create_app() -> FastAPI:
 
     app.include_router(models_router)
     app.include_router(transcribe_router)
+    app.include_router(asr_router)
     app.include_router(runs_router)
     app.include_router(stream_router)
 

@@ -60,6 +60,7 @@ def client(tmp_path, monkeypatch):
     # Pin the static dir at a path that does not exist: otherwise the suite
     # would pass or fail depending on whether frontend/dist has been built.
     monkeypatch.setenv("STT_STATIC_DIR", str(tmp_path / "no-frontend"))
+    monkeypatch.setenv("STT_DATASET_DIR", str(tmp_path / "dataset"))
     for var in ("STT_BACKEND_SENSEVOICE", "STT_BACKEND_QWEN", "STT_BACKEND_WHISPER"):
         monkeypatch.delenv(var, raising=False)
 
@@ -84,6 +85,7 @@ def real_models_client(tmp_path, monkeypatch):
     real benchmark rows.
     """
     monkeypatch.setenv("STT_DB_PATH", str(tmp_path / "runs.db"))
+    monkeypatch.setenv("STT_DATASET_DIR", str(tmp_path / "dataset"))
 
     for module in [m for m in list(sys.modules) if m == "app" or m.startswith("app.")]:
         del sys.modules[module]
@@ -115,6 +117,7 @@ def stub_model_client(client, monkeypatch):
     called), so everything around it is the real code path.
     """
     import app.models as models_mod
+    import app.routes.asr as asr_mod
     import app.routes.stream as stream_mod
     import app.routes.transcribe as transcribe_mod
 
@@ -130,6 +133,7 @@ def stub_model_client(client, monkeypatch):
     )
     monkeypatch.setattr(transcribe_mod, "transcribe_samples", fake_transcribe)
     monkeypatch.setattr(stream_mod, "transcribe_samples", fake_transcribe)
+    monkeypatch.setattr(asr_mod, "transcribe_samples", fake_transcribe)
 
     client.stub_model = key
     client.stub_calls = calls
@@ -152,6 +156,7 @@ def built_frontend(tmp_path, monkeypatch):
     monkeypatch.setenv("STT_STATIC_DIR", str(dist))
     monkeypatch.setenv("STT_DB_PATH", str(tmp_path / "runs.db"))
     monkeypatch.setenv("STT_MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setenv("STT_DATASET_DIR", str(tmp_path / "dataset"))
 
     for module in [m for m in list(sys.modules) if m == "app" or m.startswith("app.")]:
         del sys.modules[module]

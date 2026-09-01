@@ -63,12 +63,24 @@ export interface RunRow {
   text: string | null
   text_hash: string | null
   expected_text: string | null
+  /** Where the raw upload was archived as training data, if it was. */
+  audio_path: string | null
 }
 
 /** `RunsResponse` — GET /runs */
 export interface RunsResponse {
   count: number
   runs: RunRow[]
+}
+
+/** `AsrResult` — POST /asr, the Hermes voice-note endpoint. */
+export interface AsrResult {
+  text: string
+  model: string
+  audio_ms: number
+  processing_ms: number
+  rtf: number
+  run_id: number | null
 }
 
 /** GET /health */

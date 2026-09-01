@@ -51,6 +51,13 @@ class Settings:
             os.environ.get("STT_DB_PATH", "/data/stt-runs.db")
         ).expanduser()
 
+        # Every clip that hits /transcribe or /asr is archived here as training
+        # and benchmark data, named by run id. Git-ignored; bind-mounted in the
+        # container so the corpus outlives the image.
+        self.dataset_dir: Path = Path(
+            os.environ.get("STT_DATASET_DIR", "/data/dataset")
+        ).expanduser()
+
         # Built frontend (Vite `dist/`). One container serves the SPA and the
         # API from the same origin, so there is no CORS hop in production.
         # Defaults to <repo>/frontend/dist, which is also the layout inside the

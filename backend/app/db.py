@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS runs (
     latency_final_ms   REAL,
     text               TEXT,
     text_hash          TEXT,
-    expected_text      TEXT
+    expected_text      TEXT,
+    audio_path         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_ts    ON runs (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_model ON runs (model, ts DESC);
@@ -51,6 +52,7 @@ _COLUMNS = (
     "text",
     "text_hash",
     "expected_text",
+    "audio_path",
 )
 
 
@@ -61,7 +63,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     column was added, so new columns need an explicit ALTER.
     """
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
-    for column, ddl in (("expected_text", "TEXT"),):
+    for column, ddl in (("expected_text", "TEXT"), ("audio_path", "TEXT")):
         if column not in existing:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {ddl}")
 
@@ -114,6 +116,7 @@ class Database:
         text: str | None = None,
         text_hash: str | None = None,
         expected_text: str | None = None,
+        audio_path: str | None = None,
         ts: float | None = None,
     ) -> int:
         """Insert one run and return its rowid."""
@@ -131,6 +134,7 @@ class Database:
             text,
             text_hash,
             expected_text,
+            audio_path,
         )
         placeholders = ", ".join("?" * len(_COLUMNS))
         sql = f"INSERT INTO runs ({', '.join(_COLUMNS)}) VALUES ({placeholders})"
@@ -140,7 +144,38 @@ class Database:
             conn.commit()
             return int(cur.lastrowid or 0)
 
+    def set_audio_path(self, run_id: int, audio_path: str) -> None:
+        """Record where the run's audio was archived.
+
+        Written after the INSERT because the filename is derived from the rowid,
+        which SQLite only assigns once the row exists.
+        """
+        conn = self.connect()
+        with self._lock:
+            conn.execute(
+                "UPDATE runs SET audio_path = ? WHERE id = ?", (audio_path, run_id)
+            )
+            conn.commit()
+
+    def update_expected_text(self, run_id: int, expected_text: str | None) -> bool:
+        """Set (or clear) a run's ground truth. False if the run does not exist."""
+        conn = self.connect()
+        with self._lock:
+            cur = conn.execute(
+                "UPDATE runs SET expected_text = ? WHERE id = ?",
+                (expected_text, run_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
     # -- reads --------------------------------------------------------------
+    def get_run(self, run_id: int) -> dict[str, Any] | None:
+        sql = "SELECT id, " + ", ".join(_COLUMNS) + " FROM runs WHERE id = ?"
+        conn = self.connect()
+        with self._lock:
+            row = conn.execute(sql, (run_id,)).fetchone()
+            return dict(row) if row else None
+
     def recent_runs(
         self,
         limit: int = 50,

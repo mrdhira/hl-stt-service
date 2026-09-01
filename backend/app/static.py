@@ -34,6 +34,7 @@ API_PREFIXES: tuple[str, ...] = (
     "/health",
     "/models",
     "/transcribe",
+    "/asr",
     "/runs",
     "/stream",
     "/docs",

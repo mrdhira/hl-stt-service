@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "sherpa-onnx>=1.13.6",
+    "soundfile>=0.12",
 ]
 
 [project.optional-dependencies]

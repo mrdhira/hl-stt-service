@@ -494,10 +494,22 @@ def test_websocket_still_routes_under_the_spa_mount(built_frontend):
 
 def test_unknown_api_path_404s_instead_of_returning_html(built_frontend):
     """A typo'd endpoint must not come back as a 200 HTML page."""
-    for path in ("/models/typo", "/runs/999", "/health/x", "/openapi.json/x"):
+    # Not /runs/<x>: PATCH /runs/{id} claims that shape, so GET there is a 405
+    # (covered by the next test) rather than a 404.
+    for path in ("/models/typo", "/health/x", "/openapi.json/x", "/asr/x"):
         resp = built_frontend.get(path)
         assert resp.status_code == 404, f"{path} returned {resp.status_code}"
         assert "hl-stt" not in resp.text
+
+
+def test_wrong_method_on_an_api_path_is_405_not_the_spa(built_frontend):
+    """/runs/{id} exists for PATCH, so GET must be a 405 from the router."""
+    resp = built_frontend.get("/runs/999")
+    assert resp.status_code == 405
+    assert "hl-stt" not in resp.text
+    # POST-only routes behave the same way.
+    assert built_frontend.get("/transcribe").status_code == 405
+    assert built_frontend.get("/asr").status_code == 405
 
 
 def test_non_get_on_unknown_path_is_not_the_spa(built_frontend):

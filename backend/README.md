@@ -40,6 +40,7 @@ tuning knobs.
 | `STT_NUM_THREADS` | `4` | onnxruntime threads per recognizer |
 | `STT_DB_PATH` | `/data/stt-runs.db` | SQLite file holding `runs` (compose sets `/data/db/stt-runs.db`) |
 | `STT_STATIC_DIR` | `<repo>/frontend/dist` | built SPA to serve; unset/absent = API only |
+| `STT_DATASET_DIR` | `/data/dataset` | where incoming clips are archived as training data |
 | `STT_PROVIDER` | `cpu` | onnxruntime provider |
 | `STT_SENSEVOICE_LANGUAGE` | `` (auto) | `zh`/`en`/`ja`/`ko`/`yue`/empty |
 | `STT_SENSEVOICE_USE_ITN` | `1` | inverse text normalisation + punctuation |
@@ -88,10 +89,11 @@ Inside the image the layout is `/app/backend` (working dir) and
 | `STT_MODELS_DIR` | `/data/models` |
 | `STT_DB_PATH` | `/data/db/stt-runs.db` |
 | `STT_STATIC_DIR` | `/app/frontend/dist` |
+| `STT_DATASET_DIR` | `/data/dataset` |
 | `STT_NUM_THREADS` | `4` |
 
-`docker-compose.yml` bind-mounts `./storage/models` and `./storage/db` onto
-`/data/models` and `/data/db`. **Put the extracted model directories in
+`docker-compose.yml` bind-mounts `./storage/models`, `./storage/db` and
+`./storage/dataset` onto `/data/models`, `/data/db` and `/data/dataset`. **Put the extracted model directories in
 `./storage/models/`** — same layout as below — and the SQLite history survives
 `docker compose down`.
 
@@ -173,7 +175,9 @@ internally, so the API accepts any input rate.
 | `GET /health` | liveness + which models loaded |
 | `GET /models` | availability of all three; `?rescan=true` re-stats the dir |
 | `POST /transcribe?model=<key>` | multipart field `audio` (WAV) + optional field `expected_text`. Returns text + `audio_ms`, `processing_ms`, `rtf`, `words`, `chars`, `text_hash`; persists a `runs` row (`mode=batch`) |
-| `GET /runs?limit=&model=&mode=` | recent rows, newest first |
+| `POST /asr?model=<key>` | one-shot transcription for the Hermes voice-note gateway; accepts compressed audio; persists a `runs` row (`mode=asr`) |
+| `GET /runs?limit=&model=&mode=` | recent rows, newest first (`mode` is `batch`, `stream` or `asr`) |
+| `PATCH /runs/{id}` | correct a run's `expected_text` after the fact |
 | `WS /stream?model=<key>&sample_rate=` | binary raw PCM16 frames (or a WAV frame), text `{"type":"eof", "expected_text": "..."}` to finish. Emits `partial`s then a `final`; persists a `runs` row (`mode=stream`) |
 
 Anything that is *not* one of those paths is handled by the SPA fallback: a real
@@ -198,6 +202,120 @@ column) and the Reports view scores WER against it. WER itself is *not* stored �
 it is computed from `text` + `expected_text` on read, so the tokenizer can change
 without a migration. Databases created before this column gain it automatically
 via an `ALTER TABLE` on connect.
+
+## `POST /asr` — the voice-note endpoint
+
+`/transcribe` is the benchmark harness: driven by the UI, WAV only, returns the
+full metric surface. `/asr` is the service endpoint that Hermes (the agent
+gateway) posts voice notes to. Same recognizers, different contract.
+
+```
+POST /asr?model=sensevoice
+Content-Type: multipart/form-data
+
+  audio          the clip (required)
+  expected_text  optional ground truth, if the caller already knows it
+```
+
+`model` defaults to **`sensevoice`** — best quality of the three here, and it
+covers English + Japanese in one model with no language hint. Override with
+`?model=qwen3` or `?model=whisper`.
+
+```json
+{
+  "text": "hello, my name is Dira. how are you?",
+  "model": "sensevoice",
+  "audio_ms": 5288.0,
+  "processing_ms": 2310.4,
+  "rtf": 0.437,
+  "run_id": 42
+}
+```
+
+```bash
+curl -sS -X POST 'http://stt.home.arpa/asr' -F 'audio=@voice.ogg'
+```
+
+Errors match the rest of the API: `400` unknown model or empty upload, `415`
+undecodable audio (the message names the formats that work), `503` when the
+model has no files on disk.
+
+### Accepted audio
+
+Unlike `/transcribe`, which takes WAV only, `/asr` accepts what messaging
+platforms actually send:
+
+| format | decoder | notes |
+|---|---|---|
+| WAV | stdlib `wave` | no dependencies, no subprocess |
+| OGG/Opus | `soundfile` | **Telegram voice notes** |
+| OGG/Vorbis, FLAC, MP3 | `soundfile` | |
+| WebM/Opus | `ffmpeg` | **browser `MediaRecorder`** |
+| MP4 / M4A | `ffmpeg` | |
+
+The container has both. Outside it they are optional and degrade in a defined
+order: `soundfile` is tried first (in-process), `ffmpeg` covers the rest, and
+WAV always works with neither installed. libsndfile has no Matroska demuxer, so
+**webm needs ffmpeg** specifically. The format is sniffed from magic bytes — a
+client-supplied `Content-Type` or filename is not trusted.
+
+Every `/asr` call lands a `runs` row tagged `mode='asr'`, so production traffic
+keeps growing the corpus. Filter it out of model comparisons with
+`GET /runs?mode=batch`.
+
+## Pronunciation-aware scoring
+
+The speaker's name is written **"Dhira"** but pronounced **"Dira"** — the h is
+silent. The models transcribe what they hear and emit "Dira", so ground truth
+spelled "Dhira" charged one substitution on every utterance containing the name.
+Run #17 scored 12.5% WER from that single word on an otherwise perfect
+transcript. That measures spelling, not recognition.
+
+`PRONUNCIATION_EQUIV` in `app/metrics.py` maps orthographic spellings to their
+spoken form and is applied to **both** sides before comparison:
+
+```python
+PRONUNCIATION_EQUIV: dict[str, str] = {
+    "dhira": "dira",
+}
+```
+
+`frontend/src/lib/wer.ts` holds an identical map — **change both together**, and
+the tokenizer-parity check keeps them honest.
+
+Deliberately **explicit, not fuzzy**: no edit-distance threshold, no phonetic
+algorithm. Those would hide real recognition errors. Only exact whole words in
+the map are equated, so "Dila" (a genuine mis-hear, run #13) still scores as an
+error, and unrelated words containing the key — "dhirama", "sandhira" — are
+untouched. Adding an entry is a conscious decision.
+
+Historical rows were corrected with a one-off script, which is idempotent and
+takes a timestamped backup first:
+
+```bash
+cd backend && .venv/bin/python scripts/migrate_pronunciation.py --dry-run
+cd backend && .venv/bin/python scripts/migrate_pronunciation.py
+```
+
+## Captured dataset
+
+Every clip that produces a run — from `/transcribe` **and** `/asr` — is archived
+to `STT_DATASET_DIR/<run_id>.<ext>` as the **original bytes**, not a re-encode.
+The extension comes from sniffing the content, so a Telegram note lands as
+`.ogg` and a browser recording as `.webm`. The path is recorded on the run in
+the `audio_path` column.
+
+Paired with `expected_text` — editable per row from the Reports tab — that is a
+labelled corpus for fine-tuning later, accumulating for free from ordinary use:
+
+```
+storage/dataset/41.ogg   <- audio
+runs.id = 41             -> expected_text = "what was actually said"
+```
+
+Writing is **best-effort by design**: a full disk or read-only mount logs a
+warning and leaves `audio_path` NULL rather than failing a good transcription.
+`storage/dataset/` is git-ignored; it holds recordings of real people.
 
 ## Streaming limitation (read before benchmarking latency)
 
