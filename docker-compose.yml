@@ -20,6 +20,8 @@ services:
       STT_MODELS_DIR: /data/models
       # Must land on the mounted volume, or the benchmark history dies with the container.
       STT_DB_PATH: /data/db/stt-runs.db
+      # Every clip that hits /transcribe or /asr is archived here as training data.
+      STT_DATASET_DIR: /data/dataset
       STT_NUM_THREADS: "4"
       STT_STATIC_DIR: /app/frontend/dist
       # Optional decode knobs — see backend/README.md.
@@ -38,6 +40,7 @@ services:
       # see, place and reuse them from the host.
       - ./storage/models:/data/models
       - ./storage/db:/data/db
+      - ./storage/dataset:/data/dataset
 
     # 16 GB box shared with other services; SenseVoice int8 + Whisper base fit well
     # inside 4 GB. Raise if you load Qwen3-ASR (its int8 decoder alone is ~721 MB).

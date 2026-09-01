@@ -1,10 +1,16 @@
 /**
  * Word error rate.
  *
- * Tokenisation mirrors `count_words` in backend/app/metrics.py: Japanese has no
+ * Tokenisation follows `count_words` in backend/app/metrics.py: Japanese has no
  * spaces, so each CJK/kana character is its own token and the rest is split on
- * whitespace. Keeping the two in sync means the `words` column and the WER
- * denominator count the same things.
+ * whitespace. Both sides apply the same NFKC + lowercase + PRONUNCIATION_EQUIV
+ * normalisation first, so the same input yields the same tokens.
+ *
+ * They are close but NOT identical, and the difference is punctuation: this
+ * tokenizer strips it before splitting, `count_words` does not. So
+ * `count_words("dhira-san")` is 1 while `tokenize("dhira-san")` is 2. Treat the
+ * `words` column as an approximate size and the WER denominator
+ * (`referenceLength`) as the authoritative token count for scoring.
  */
 
 // CJK ideographs, hiragana, katakana, halfwidth katakana — same ranges as the
@@ -14,9 +20,52 @@ const CJK = /[぀-ヿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ]/gu
 // Punctuation is not a transcription error; strip it before comparing.
 const PUNCTUATION = /[.,!?;:"'“”‘’()[\]{}<>«»…—–\-。、！？；：「」『』（）]/gu
 
+/**
+ * Orthographic spelling -> spoken form, applied to BOTH sides before any
+ * comparison so a name written one way and said another is not scored as an
+ * error.
+ *
+ * Why this exists: the speaker's name is written "Dhira" but *pronounced*
+ * "Dira" — the h is silent. The models transcribe what they hear and emit
+ * "Dira", so ground truth spelled "Dhira" charged one substitution on every
+ * utterance containing the name (run #17: 12.5% WER from that single word, on
+ * an otherwise perfect transcript). That measures spelling, not recognition.
+ *
+ * This is a deliberately *explicit* lookup, not fuzzy matching. There is no
+ * edit-distance threshold and no phonetic algorithm — those would silently
+ * hide real recognition errors. Only the exact whole words listed here are
+ * equated, so adding one is a conscious decision.
+ *
+ * Keys must be lowercase. The backend keeps an identical map in
+ * `backend/app/metrics.py` — change both together.
+ */
+export const PRONUNCIATION_EQUIV: Record<string, string> = {
+  dhira: 'dira',
+}
+
+// A "word" for equivalence purposes: a run of letters, no digits or
+// punctuation, so only whole tokens are rewritten. Substring matching would
+// turn an unrelated word like "dhirama" into "dirama".
+//
+// Reconciled with the backend's `[^\W\d_]+`: Python excludes digits and
+// underscore explicitly and matches letters only — combining marks are not
+// word characters there either — so the two classes agree. Verified on
+// fullwidth, decomposed-accent, digit-suffixed and underscore-joined inputs.
+const WORD = /\p{L}+/gu
+
+/** Rewrite orthographic spellings to their spoken form. Whole words only. */
+export function applyPronunciationEquiv(text: string): string {
+  if (!text) return text
+  return text.replace(WORD, (word) => PRONUNCIATION_EQUIV[word.toLowerCase()] ?? word)
+}
+
 export function tokenize(text: string): string[] {
   if (!text) return []
-  const normalised = text.normalize('NFKC').toLowerCase().replace(PUNCTUATION, ' ')
+  // Equivalences run after NFKC + lowercase and before the token split, so the
+  // map only ever needs lowercase keys.
+  const normalised = applyPronunciationEquiv(
+    text.normalize('NFKC').toLowerCase(),
+  ).replace(PUNCTUATION, ' ')
 
   const tokens: string[] = []
   for (const chunk of normalised.split(/\s+/)) {

@@ -51,6 +51,9 @@ class TranscribeResult(BaseModel):
     expected_text: str | None = Field(
         default=None, description="Ground truth supplied by the caller, for WER"
     )
+    audio_path: str | None = Field(
+        default=None, description="Where the raw upload was archived, if it was"
+    )
     run_id: int | None = Field(default=None, description="rowid of the persisted runs row")
 
 
@@ -71,8 +74,40 @@ class RunRow(BaseModel):
     text: str | None = None
     text_hash: str | None = None
     expected_text: str | None = None
+    audio_path: str | None = None
 
 
 class RunsResponse(BaseModel):
     count: int
     runs: list[RunRow]
+
+
+#: Ceiling for caller-supplied ground truth. Generous for a spoken utterance
+#: (roughly 1500 words) but bounded, because the endpoints that accept it are
+#: unauthenticated and write straight to SQLite.
+MAX_EXPECTED_TEXT = 10_000
+
+
+class ExpectedTextUpdate(BaseModel):
+    """Body of PATCH /runs/{id} — correcting a run's ground truth by hand."""
+
+    expected_text: str | None = Field(
+        default=None,
+        max_length=MAX_EXPECTED_TEXT,
+        description="New ground truth. Empty or omitted clears it (stored NULL).",
+    )
+
+
+class AsrResult(BaseModel):
+    """POST /asr — one-shot transcription for the Hermes voice-note gateway.
+
+    Deliberately smaller than `TranscribeResult`: callers want the text and
+    enough timing to spot a slow model, not the full benchmark surface.
+    """
+
+    text: str
+    model: str
+    audio_ms: float
+    processing_ms: float
+    rtf: float
+    run_id: int | None = None

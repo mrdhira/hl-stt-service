@@ -66,6 +66,8 @@ recordings/
 # host volumes for the container (models + sqlite live here, not in git)
 storage/db/
 storage/models/
+# every clip that hits /transcribe or /asr is archived here as training data
+storage/dataset/
 
 # ============ EDITOR / OS ============
 .vscode/

@@ -1,4 +1,14 @@
-"""POST /transcribe — one-shot decode of an uploaded clip, persisted to `runs`."""
+"""POST /asr — one-shot transcription for the Hermes voice-note gateway.
+
+Separate from `/transcribe` on purpose. `/transcribe` is the benchmark harness:
+it is driven by the UI, takes WAV that the browser has already normalised, and
+returns the full metric surface. `/asr` is a service endpoint: an agent gateway
+POSTs whatever the messaging platform handed it (Telegram sends OGG/Opus),
+picks no model, and wants the text back.
+
+Both land a `runs` row, so ordinary use keeps growing the benchmark corpus —
+`/asr` rows are tagged `mode='asr'` and can be filtered out of model comparisons.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +18,11 @@ from anyio import to_thread
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from ..audio import (
-    SUPPORTED_NOTE,
+    SUPPORTED_UPLOAD_NOTE,
     AudioDecodeError,
     AudioTooLongError,
-    decode_wav,
+    EmptyAudioError,
+    decode_audio,
     duration_ms,
 )
 from ..config import MODEL_KEYS
@@ -20,23 +31,29 @@ from ._limits import reject_oversized
 from ..db import db
 from ..metrics import count_chars, count_words, rtf, text_hash
 from ..models import registry, transcribe_samples
-from ..schemas import MAX_EXPECTED_TEXT, TranscribeResult
+from ..schemas import MAX_EXPECTED_TEXT, AsrResult
 
-router = APIRouter(tags=["transcribe"])
+router = APIRouter(tags=["asr"])
 
-MODE = "batch"
+MODE = "asr"
+
+#: SenseVoice is the default: best quality of the three on this corpus, and it
+#: handles English + Japanese in one model without a language hint.
+DEFAULT_MODEL = "sensevoice"
 
 
-@router.post("/transcribe", response_model=TranscribeResult)
-async def transcribe(
-    model: str = Query(..., description="sensevoice | qwen3 | whisper"),
-    audio: UploadFile = File(..., description=f"WAV upload ({SUPPORTED_NOTE})"),
+@router.post("/asr", response_model=AsrResult)
+async def asr(
+    model: str = Query(
+        DEFAULT_MODEL, description=f"sensevoice | qwen3 | whisper (default {DEFAULT_MODEL})"
+    ),
+    audio: UploadFile = File(..., description=f"Audio upload ({SUPPORTED_UPLOAD_NOTE})"),
     expected_text: str | None = Form(
         None,
         max_length=MAX_EXPECTED_TEXT,
-        description="Optional ground truth for this clip; enables WER in Reports",
+        description="Optional ground truth, if the caller already knows it",
     ),
-) -> TranscribeResult:
+) -> AsrResult:
     if model not in MODEL_KEYS:
         raise HTTPException(
             status_code=400,
@@ -54,15 +71,17 @@ async def transcribe(
             },
         )
 
-    expected = _clean_expected(expected_text)
-
     raw = await audio.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty upload")
     reject_oversized(raw)
 
     try:
-        samples, sample_rate = decode_wav(raw)
+        # Unlike /transcribe this accepts compressed containers — the caller is
+        # a bot relaying a voice note, not a browser that can re-encode first.
+        # decode_audio rejects an empty body itself, so there is no separate
+        # emptiness check here.
+        samples, sample_rate = await to_thread.run_sync(decode_audio, raw)
+    except EmptyAudioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except AudioTooLongError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except AudioDecodeError as exc:
@@ -74,51 +93,36 @@ async def transcribe(
 
     started = time.perf_counter()
     try:
-        # Decoding is CPU-bound C++; keep it off the event loop.
         text = await to_thread.run_sync(transcribe_samples, model, samples, sample_rate)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     processing_ms = (time.perf_counter() - started) * 1000.0
 
-    result = TranscribeResult(
+    expected = (expected_text or "").strip() or None
+    run_id = db.insert_run(
         model=model,
         mode=MODE,
-        text=text,
         audio_ms=audio_len_ms,
         processing_ms=processing_ms,
         rtf=rtf(processing_ms, audio_len_ms),
         words=count_words(text),
         chars=count_chars(text),
+        text=text,
         text_hash=text_hash(text),
-        sample_rate=sample_rate,
         expected_text=expected,
-    )
-    result.run_id = db.insert_run(
-        model=model,
-        mode=MODE,
-        audio_ms=result.audio_ms,
-        processing_ms=result.processing_ms,
-        rtf=result.rtf,
-        words=result.words,
-        chars=result.chars,
-        text=result.text,
-        text_hash=result.text_hash,
-        expected_text=result.expected_text,
     )
 
     # Archive the original bytes as training data. Best-effort: a failed write
     # leaves audio_path NULL rather than failing a good transcription.
-    stored = await to_thread.run_sync(save_clip, result.run_id, raw)
+    stored = await to_thread.run_sync(save_clip, run_id, raw)
     if stored:
-        db.set_audio_path(result.run_id, stored)
-        result.audio_path = stored
+        db.set_audio_path(run_id, stored)
 
-    return result
-
-
-def _clean_expected(value: str | None) -> str | None:
-    """Blank form fields arrive as "" — store NULL, not an empty string."""
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
+    return AsrResult(
+        text=text,
+        model=model,
+        audio_ms=audio_len_ms,
+        processing_ms=processing_ms,
+        rtf=rtf(processing_ms, audio_len_ms),
+        run_id=run_id,
+    )

@@ -4,3 +4,7 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 sherpa-onnx>=1.13.6
+# POST /asr accepts compressed audio. soundfile (libsndfile) covers OGG/Opus —
+# the Telegram voice-note path — in-process. webm/opus and mp4 additionally need
+# the ffmpeg binary, which the Dockerfile installs.
+soundfile>=0.12

@@ -81,10 +81,15 @@ backtracking for the substitution/deletion/insertion split. It is *not* stored:
 the ground truth lives on the run, so the tokenizer can change without a
 migration.
 
-Tokenisation mirrors `count_words` in `backend/app/metrics.py` — each CJK/kana
-character is its own token, everything else splits on whitespace — so the
-`words` column and the WER denominator count the same units. Text is
-NFKC-normalised, lowercased and stripped of punctuation before comparison.
+Tokenisation follows `count_words` in `backend/app/metrics.py` — each CJK/kana
+character is its own token, everything else splits on whitespace. Both sides
+apply the same NFKC + lowercase + `PRONUNCIATION_EQUIV` normalisation, so the
+same input yields the same tokens.
+
+They are close but **not identical**: this tokenizer strips punctuation before
+splitting and `count_words` does not, so `count_words("dhira-san")` is 1 while
+`tokenize()` gives 2. The `words` column is an approximate size; the WER
+denominator is the authoritative count.
 WER can exceed 100% when the hypothesis is longer than the reference; that is
 correct, not a display bug.
 

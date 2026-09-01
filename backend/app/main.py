@@ -12,7 +12,13 @@ from . import __version__
 from .config import settings
 from .db import db
 from .models import SHERPA_AVAILABLE, SHERPA_IMPORT_ERROR, SHERPA_VERSION, registry
-from .routes import models_router, runs_router, stream_router, transcribe_router
+from .routes import (
+    asr_router,
+    models_router,
+    runs_router,
+    stream_router,
+    transcribe_router,
+)
 from .static import mount_spa
 
 logger = logging.getLogger("hl-stt")
@@ -55,17 +61,25 @@ def create_app() -> FastAPI:
     )
 
     # The Vite dev server talks to this API from another origin; in production
-    # Caddy serves both from stt.home.arpa so this is a no-op.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # one container serves the SPA and the API together, so no cross-origin
+    # request happens at all and this list can be empty.
+    #
+    # Explicitly NOT a wildcard. /asr and PATCH /runs/{id} mutate state and the
+    # API has no authentication, so "*" would let any page a LAN user visits
+    # rewrite their ground truth or drive transcription from the browser they
+    # already have open. Configure with STT_CORS_ORIGINS.
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+            allow_headers=["Content-Type"],
+        )
 
     app.include_router(models_router)
     app.include_router(transcribe_router)
+    app.include_router(asr_router)
     app.include_router(runs_router)
     app.include_router(stream_router)
 

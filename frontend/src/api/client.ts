@@ -2,7 +2,13 @@
  *  benchmark tool, stale numbers would be worse than a round trip. */
 
 import { apiUrl } from './config'
-import type { HealthResponse, ModelsResponse, RunsResponse, TranscribeResult } from './types'
+import type {
+  HealthResponse,
+  ModelsResponse,
+  RunRow,
+  RunsResponse,
+  TranscribeResult,
+} from './types'
 
 /** An API error carrying the backend's `detail` payload, whatever its shape. */
 export class ApiError extends Error {
@@ -78,6 +84,25 @@ export function getRuns(query: RunsQuery = {}, signal?: AbortSignal): Promise<Ru
   if (query.mode) params.set('mode', query.mode)
   const suffix = params.toString()
   return request<RunsResponse>(`/runs${suffix ? `?${suffix}` : ''}`, { signal })
+}
+
+/**
+ * PATCH /runs/{id} — correct a run's ground truth after the fact.
+ *
+ * Blank clears the label: the backend stores NULL rather than "", so a run is
+ * either labelled or it is not, and WER stays undefined for the unlabelled.
+ */
+export function patchRunExpectedText(
+  runId: number,
+  expectedText: string,
+  signal?: AbortSignal,
+): Promise<RunRow> {
+  return request<RunRow>(`/runs/${runId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_text: expectedText.trim() }),
+    signal,
+  })
 }
 
 /**

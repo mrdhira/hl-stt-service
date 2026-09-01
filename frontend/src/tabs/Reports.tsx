@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ApiError, patchRunExpectedText } from '../api/client'
 import { RUNS_LIMIT } from '../api/config'
 import type { ModelInfo, RunRow } from '../api/types'
 import { count, ms, percent, rtf, rtfTone, timestamp, werTone } from '../lib/format'
@@ -41,6 +42,39 @@ export function Reports({
   const [modelFilter, setModelFilter] = useState('')
   const [modeFilter, setModeFilter] = useState('')
   const [taggedOnly, setTaggedOnly] = useState(false)
+
+  // Inline ground-truth editing. One row at a time: opening another editor
+  // while one is dirty would need a confirm dialog for no real benefit.
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [savingId, setSavingId] = useState<number | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  const beginEdit = (run: RunRow) => {
+    setEditingId(run.id)
+    setEditError(null)
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
+    setEditError(null)
+  }
+
+  const saveEdit = async (runId: number, value: string) => {
+    setSavingId(runId)
+    setEditError(null)
+    try {
+      await patchRunExpectedText(runId, value)
+      setEditingId(null)
+      // Refetch rather than patching local state: WER and the per-model
+      // roll-up both derive from the row, and the server is the source of
+      // truth for what was actually stored (blank becomes null).
+      onRefresh()
+    } catch (cause) {
+      setEditError(cause instanceof ApiError ? cause.message : String(cause))
+    } finally {
+      setSavingId(null)
+    }
+  }
 
   const scored: ScoredRun[] = useMemo(
     () =>
@@ -95,6 +129,7 @@ export function Reports({
               <option value="">All modes</option>
               <option value="batch">batch</option>
               <option value="stream">stream</option>
+              <option value="asr">asr</option>
             </select>
           </label>
 
@@ -194,7 +229,8 @@ export function Reports({
                   <th style={{ textAlign: 'right' }}>1st part.</th>
                   <th style={{ textAlign: 'right' }}>Final lat.</th>
                   <th style={{ textAlign: 'right' }}>WER</th>
-                  <th>Text</th>
+                  <th>Model said</th>
+                  <th>Expected (ground truth)</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,9 +260,17 @@ export function Reports({
                     </td>
                     <td className="text">
                       {run.text || <span className="faint">(empty)</span>}
-                      {run.expected_text && (
-                        <span className="expected">expected: {run.expected_text}</span>
-                      )}
+                    </td>
+                    <td className="text">
+                      <ExpectedCell
+                        run={run}
+                        editing={editingId === run.id}
+                        onEdit={() => beginEdit(run)}
+                        onCancel={cancelEdit}
+                        onSave={saveEdit}
+                        saving={savingId === run.id}
+                        error={editingId === run.id ? editError : null}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -263,4 +307,101 @@ function summarize(runs: ScoredRun[]): Summary[] {
       }
     })
     .sort((a, b) => a.model.localeCompare(b.model))
+}
+
+
+interface ExpectedCellProps {
+  run: ScoredRun
+  editing: boolean
+  saving: boolean
+  error: string | null
+  onEdit: () => void
+  onCancel: () => void
+  onSave: (runId: number, value: string) => void
+}
+
+/**
+ * The "what you meant" half of the row.
+ *
+ * Read mode shows the stored ground truth (or a prompt to add one); edit mode
+ * swaps in a textarea pre-filled with it. The draft is local state so typing
+ * never re-renders the whole table, and it is seeded from the run each time the
+ * editor opens rather than being held for closed rows.
+ */
+function ExpectedCell({
+  run,
+  editing,
+  saving,
+  error,
+  onEdit,
+  onCancel,
+  onSave,
+}: ExpectedCellProps) {
+  const [draft, setDraft] = useState(run.expected_text ?? '')
+  const textarea = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(run.expected_text ?? '')
+      textarea.current?.focus()
+    }
+  }, [editing, run.expected_text])
+
+  if (!editing) {
+    return (
+      <div className="expected-cell">
+        {run.expected_text ? (
+          <span className="expected-value">{run.expected_text}</span>
+        ) : (
+          <span className="faint">no ground truth</span>
+        )}
+        <button
+          className="btn tiny"
+          onClick={onEdit}
+          title="Edit the expected text for this run"
+        >
+          {run.expected_text ? 'Edit' : 'Add'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="expected-editor">
+      <textarea
+        ref={textarea}
+        value={draft}
+        disabled={saving}
+        rows={3}
+        placeholder="What was actually said. Leave empty to clear the label."
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          // Enter inserts a newline; Ctrl/Cmd+Enter saves, Escape discards.
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onCancel()
+          }
+          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            // Without this the textarea also inserts a newline behind the save.
+            event.preventDefault()
+            onSave(run.id, draft)
+          }
+        }}
+      />
+      <div className="row" style={{ gap: 6 }}>
+        <button
+          className="btn primary tiny"
+          onClick={() => onSave(run.id, draft)}
+          disabled={saving}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button className="btn tiny" onClick={onCancel} disabled={saving}>
+          Cancel
+        </button>
+        <span className="faint">⌘/Ctrl+Enter</span>
+      </div>
+      {error && <div className="notice error">{error}</div>}
+    </div>
+  )
 }
