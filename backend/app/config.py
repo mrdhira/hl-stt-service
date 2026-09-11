@@ -89,6 +89,13 @@ class Settings:
 
         self.provider: str = os.environ.get("STT_PROVIDER", "cpu")
 
+        # Root log level, applied by logging_setup.setup_logging(). A name the
+        # stdlib knows ("DEBUG", "INFO", "WARNING", ...); anything else falls
+        # back to INFO rather than silencing the app by typo.
+        self.log_level: str = (
+            os.environ.get("STT_LOG_LEVEL", "").strip().upper() or "INFO"
+        )
+
         # --- upload limits -------------------------------------------------
         # Decoding amplifies hugely: a 221 KB Opus file expands to ~19 MB of
         # PCM, and turning that into a Python float list costs ~307 MB — about

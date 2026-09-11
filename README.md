@@ -33,6 +33,8 @@ backend/            FastAPI app + sherpa-onnx loaders + SQLite
     schemas.py        pydantic response models
     static.py         serves the built SPA as a 404 fallback
     dataset.py        archives every incoming clip as training data
+    logging_setup.py  one STDOUT handler, one format, level from STT_LOG_LEVEL
+    middleware.py     per-request log line + request id + 500 traceback logging
     routes/           models · transcribe · asr · runs · stream (WS)
     main.py           app wiring + uvicorn runner
   scripts/          one-off maintenance (pronunciation ground-truth migration)
@@ -150,6 +152,12 @@ green both before and after the multi-GB downloads.
   map (mirrored in the backend and frontend) equates the two. It is a fixed word list, not
   fuzzy matching — genuine mis-hears like "Dila" still count as errors.
 - Models are downloaded once to a host volume and kept resident in memory.
+- **Logs go to STDOUT**, so `docker logs hl-stt` is the whole story: one line per request
+  (`method path -> status`, duration, request id) plus one per decode (model, audio bytes,
+  inference ms, output **length**). Transcripts are never logged — the text lives in `runs`,
+  not in the log. An unhandled error logs its traceback under the same request id and still
+  returns the usual `500`. `STT_LOG_LEVEL` sets the level; a successful `/health` is `DEBUG`
+  so the 30-second healthcheck does not fill the log.
 - `mode=stream` rows sum **every** decode, because sherpa-onnx has no streaming recognizer for
   these three models and the backend re-decodes the buffer on an interval. Compare **RTF** on
   `mode=batch` rows and **latency** on `mode=stream` rows — see

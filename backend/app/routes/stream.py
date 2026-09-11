@@ -47,6 +47,7 @@ Connect to ``/stream?model=<key>&sample_rate=16000``.
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from anyio import to_thread
@@ -56,7 +57,16 @@ from ..audio import AudioDecodeError, decode_wav, duration_ms, looks_like_wav, p
 from ..config import MODEL_KEYS, settings
 from ..db import db
 from ..metrics import count_chars, count_words, rtf, text_hash
+from ..middleware import (
+    bind_request_id,
+    current_request_id,
+    new_request_id,
+    reset_request_id,
+    safe,
+)
 from ..models import registry, transcribe_samples
+
+logger = logging.getLogger("hl-stt")
 
 router = APIRouter(tags=["stream"])
 
@@ -76,6 +86,29 @@ async def stream(
     sample_rate: int = Query(0, description="Sample rate of raw PCM frames"),
 ) -> None:
     await websocket.accept()
+
+    # RequestLoggingMiddleware never sees a websocket scope, so this connection
+    # mints its own id and binds it for the life of the handler.
+    request_id = new_request_id()
+    token = bind_request_id(request_id)
+    try:
+        await _serve(websocket, model, sample_rate, request_id)
+    finally:
+        reset_request_id(token)
+
+
+async def _serve(
+    websocket: WebSocket, model: str, sample_rate: int, request_id: str
+) -> None:
+    """The connection itself, once it has an id bound to log against."""
+    # No client address, for the same reason the HTTP line carries none: the
+    # only peer this process has is Caddy. See RequestLoggingMiddleware.
+    logger.info(
+        "stream rid=%s open model=%s sample_rate=%d",
+        request_id,
+        safe(model),
+        sample_rate,
+    )
 
     if model not in MODEL_KEYS:
         await _fail(websocket, f"unknown model '{model}'; expected one of {list(MODEL_KEYS)}")
@@ -113,16 +146,23 @@ async def stream(
     # partials, and a slow box must not silently emit fewer of them.
     samples_at_last_partial = 0
     n_partials = 0
+    audio_bytes = 0
 
     try:
         while True:
             message = await websocket.receive()
 
             if message.get("type") == "websocket.disconnect":
+                logger.info(
+                    "stream rid=%s client disconnected after %d bytes",
+                    request_id,
+                    audio_bytes,
+                )
                 return
 
             chunk = message.get("bytes")
             if chunk:
+                audio_bytes += len(chunk)
                 if first_audio_at is None:
                     first_audio_at = time.perf_counter()
                 try:
@@ -144,6 +184,16 @@ async def stream(
                     n_partials += 1
                     if first_partial_at is None:
                         first_partial_at = emitted_at
+                    logger.debug(
+                        "stream rid=%s partial #%d model=%s audio_bytes=%d "
+                        "inference_ms=%.1f text_len=%d",
+                        request_id,
+                        n_partials,
+                        model,
+                        audio_bytes,
+                        took_ms,
+                        len(text),
+                    )
                     await websocket.send_json(
                         {
                             "type": "partial",
@@ -198,6 +248,23 @@ async def stream(
                     text_hash=text_hash(text),
                     expected_text=expected,
                 )
+                # Length only, never the transcript — see the note in
+                # routes/asr.py. `inference_ms` is every decode this stream
+                # paid for, partials included.
+                logger.info(
+                    "stream rid=%s final model=%s audio_bytes=%d audio_ms=%.0f "
+                    "inference_ms=%.1f final_decode_ms=%.1f text_len=%d partials=%d "
+                    "run_id=%d",
+                    request_id,
+                    model,
+                    audio_bytes,
+                    audio_len_ms,
+                    decode_ms_total,
+                    took_ms,
+                    len(text),
+                    n_partials,
+                    run_id,
+                )
                 await websocket.send_json(
                     {
                         "type": "final",
@@ -225,11 +292,15 @@ async def stream(
                 return
 
             if kind == "reset":
+                logger.info(
+                    "stream rid=%s reset after %d bytes", request_id, audio_bytes
+                )
                 samples = []
                 first_audio_at = first_partial_at = None
                 decode_ms_total = 0.0
                 samples_at_last_partial = 0
                 n_partials = 0
+                audio_bytes = 0
                 await websocket.send_json({"type": "reset"})
                 continue
 
@@ -237,6 +308,9 @@ async def stream(
             return
 
     except WebSocketDisconnect:
+        logger.info(
+            "stream rid=%s client disconnected after %d bytes", request_id, audio_bytes
+        )
         return
 
 
@@ -279,6 +353,7 @@ async def _decode(model: str, samples: list[float], rate: int):
 
 
 async def _fail(websocket: WebSocket, detail: str) -> None:
+    logger.warning("stream rid=%s failed: %s", current_request_id(), safe(detail))
     try:
         await websocket.send_json({"type": "error", "detail": detail})
         await websocket.close(code=1011)

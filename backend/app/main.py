@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__
 from .config import settings
 from .db import db
+from .logging_setup import resolve_level, setup_logging
+from .middleware import RequestLoggingMiddleware, log_unhandled_exception
 from .models import SHERPA_AVAILABLE, SHERPA_IMPORT_ERROR, SHERPA_VERSION, registry
 from .routes import (
     asr_router,
@@ -26,9 +28,11 @@ logger = logging.getLogger("hl-stt")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    setup_logging()
+    # Logged *at* the configured level, so the line is visible whatever that
+    # level is — at WARNING an INFO announcement would be the first thing the
+    # new setting hid.
+    logger.log(resolve_level(settings.log_level), "log level: %s", settings.log_level)
     db.connect()
     logger.info("runs database: %s (%d rows)", db.path, db.count_runs())
 
@@ -77,6 +81,10 @@ def create_app() -> FastAPI:
             allow_headers=["Content-Type"],
         )
 
+    # Starlette consults this only for an exception no other handler claimed.
+    # It logs the traceback and returns Starlette's own 500 body unchanged.
+    app.add_exception_handler(Exception, log_unhandled_exception)
+
     app.include_router(models_router)
     app.include_router(transcribe_router)
     app.include_router(asr_router)
@@ -95,6 +103,12 @@ def create_app() -> FastAPI:
     # LAST: the SPA mount matches "/" and everything under it, so every API
     # route above must already be registered or it would be shadowed.
     mount_spa(app, settings.static_dir)
+
+    # After mount_spa, which registers a middleware of its own. add_middleware
+    # puts each new middleware at the front of the stack, so the one added last
+    # is the outermost — and this has to be outermost or it would log the 404
+    # the SPA fallback then turns into the 200 the client actually gets.
+    app.add_middleware(RequestLoggingMiddleware)
 
     return app
 
