@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from anyio import to_thread
@@ -19,8 +20,11 @@ from ..dataset import save_clip
 from ._limits import reject_oversized
 from ..db import db
 from ..metrics import count_chars, count_words, rtf, text_hash
+from ..middleware import current_request_id
 from ..models import registry, transcribe_samples
 from ..schemas import MAX_EXPECTED_TEXT, TranscribeResult
+
+logger = logging.getLogger("hl-stt")
 
 router = APIRouter(tags=["transcribe"])
 
@@ -79,6 +83,18 @@ async def transcribe(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     processing_ms = (time.perf_counter() - started) * 1000.0
+
+    # Length only, never the transcript — see the note in routes/asr.py.
+    logger.info(
+        "transcribe rid=%s model=%s audio_bytes=%d audio_ms=%.0f "
+        "inference_ms=%.1f text_len=%d",
+        current_request_id(),
+        model,
+        len(raw),
+        audio_len_ms,
+        processing_ms,
+        len(text),
+    )
 
     result = TranscribeResult(
         model=model,

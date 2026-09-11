@@ -14,7 +14,9 @@ backend/
     metrics.py    words / chars / text_hash / RTF
     models.py     sherpa-onnx registry: availability + lazy load
     schemas.py    pydantic response models
-    routes/       models.py, transcribe.py, runs.py, stream.py
+    logging_setup.py  STDOUT logging, one format, level from STT_LOG_LEVEL
+    middleware.py     request log line, request id, unhandled-error traceback
+    routes/       models.py, transcribe.py, asr.py, runs.py, stream.py
     main.py       app wiring + uvicorn runner
   tests/          pytest; decode tests skip when no weights are present
 ```
@@ -45,6 +47,7 @@ tuning knobs.
 | `STT_MAX_AUDIO_SECONDS` | `600` (10 min) | longest accepted *decoded* audio; over it is `413` |
 | `STT_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | allowed browser origins; empty disables CORS entirely |
 | `STT_PROVIDER` | `cpu` | onnxruntime provider |
+| `STT_LOG_LEVEL` | `INFO` | root log level (`DEBUG` adds the per-partial stream lines); an unknown name falls back to `INFO` |
 | `STT_SENSEVOICE_LANGUAGE` | `` (auto) | `zh`/`en`/`ja`/`ko`/`yue`/empty |
 | `STT_SENSEVOICE_USE_ITN` | `1` | inverse text normalisation + punctuation |
 | `STT_WHISPER_LANGUAGE` | `` (auto) | e.g. `en`, `ja` |
@@ -296,6 +299,43 @@ client-supplied `Content-Type` or filename is not trusted.
 Every `/asr` call lands a `runs` row tagged `mode='asr'`, so production traffic
 keeps growing the corpus. Filter it out of model comparisons with
 `GET /runs?mode=batch`.
+
+## Logging
+
+Everything goes to **STDOUT** in one format (`timestamp LEVEL logger: message`), so
+`docker logs hl-stt` shows the app, uvicorn and stdlib warnings together.
+`logging_setup.setup_logging()` is called once from the lifespan and `STT_LOG_LEVEL` sets the
+level for everything, uvicorn included. uvicorn's access log is left off — the middleware
+line below replaces it, with a duration and a request id attached.
+
+```
+2026-01-01 10:00:00,123 INFO hl-stt: request rid=8f21ac04 POST /asr -> 200 in 812.4ms
+2026-01-01 10:00:00,124 INFO hl-stt: asr rid=8f21ac04 model=sensevoice audio_bytes=41236 audio_ms=2560 inference_ms=790.1 text_len=57
+```
+
+Every HTTP request gets a short `rid`, carried on its own line, on the decode line, and on
+the traceback if it fails, so one id ties them together. It stays bound for as long as the
+response is being written, so a streaming route logs under it too. `/stream` mints its own —
+a websocket never reaches the HTTP middleware.
+
+**Transcripts are never logged**, only `text_len`. The audio is somebody's voice note and
+logs get shipped and kept; the text belongs in `runs`, which is the thing behind the auth
+boundary. Client-supplied values (paths, model keys, error details) have anything that could
+end a log line stripped and long ones marked as truncated, so a crafted request cannot forge
+a line.
+
+**No client address.** Caddy is the sole front door, so the only peer this process ever has
+is the proxy and the field would read `172.18.0.1` on every line; Caddy's own access log has
+the real client. Taking it from `X-Forwarded-For` instead would mean telling uvicorn which
+proxies to trust (`--proxy-headers --forwarded-allow-ips`), which also rewrites the request
+scheme and therefore the URLs the app generates — more than a logging change should do.
+
+A successful `GET /health` logs at **DEBUG**: the compose healthcheck polls it every 30s,
+which is ~2900 lines a day that say nothing. A failing one still logs at WARNING or ERROR
+like any other request.
+
+An unhandled exception is logged with its traceback and still returns Starlette's own
+`500 Internal Server Error` — the handler observes, it does not change the response.
 
 ## Pronunciation-aware scoring
 

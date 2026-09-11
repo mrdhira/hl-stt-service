@@ -8,6 +8,7 @@ with no models at all still passes.
 from __future__ import annotations
 
 import io
+import logging
 import math
 import os
 import struct
@@ -19,6 +20,30 @@ import pytest
 
 # backend/ on the path so `import app` works without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+#: Every logger ``logging_setup.setup_logging`` touches. "" is the root logger.
+_LOGGERS_SETUP_TOUCHES = ("", "uvicorn", "uvicorn.error", "uvicorn.access")
+
+
+@pytest.fixture(autouse=True)
+def restore_logging():
+    """Put global logging back the way pytest left it, after every test.
+
+    Logging config is process-wide: any fixture that starts the app runs the
+    lifespan, which calls ``setup_logging()`` and rewires the root logger and
+    uvicorn's. Without this the first test to start the app would leave that
+    wiring in place for every test after it, including tests of logging.
+    """
+    saved = [
+        (logger, list(logger.handlers), logger.level, logger.propagate)
+        for logger in (logging.getLogger(name) for name in _LOGGERS_SETUP_TOUCHES)
+    ]
+    yield
+    for logger, handlers, level, propagate in saved:
+        logger.handlers[:] = handlers
+        logger.setLevel(level)
+        logger.propagate = propagate
 
 
 def make_wav(

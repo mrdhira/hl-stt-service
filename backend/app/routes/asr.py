@@ -12,6 +12,7 @@ Both land a `runs` row, so ordinary use keeps growing the benchmark corpus —
 
 from __future__ import annotations
 
+import logging
 import time
 
 from anyio import to_thread
@@ -30,8 +31,11 @@ from ..dataset import save_clip
 from ._limits import reject_oversized
 from ..db import db
 from ..metrics import count_chars, count_words, rtf, text_hash
+from ..middleware import current_request_id
 from ..models import registry, transcribe_samples
 from ..schemas import MAX_EXPECTED_TEXT, AsrResult
+
+logger = logging.getLogger("hl-stt")
 
 router = APIRouter(tags=["asr"])
 
@@ -97,6 +101,18 @@ async def asr(
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     processing_ms = (time.perf_counter() - started) * 1000.0
+
+    # Length only, never the transcript: these logs are kept and shipped, and
+    # the audio is someone's voice note. The text lives in `runs` instead.
+    logger.info(
+        "asr rid=%s model=%s audio_bytes=%d audio_ms=%.0f inference_ms=%.1f text_len=%d",
+        current_request_id(),
+        model,
+        len(raw),
+        audio_len_ms,
+        processing_ms,
+        len(text),
+    )
 
     expected = (expected_text or "").strip() or None
     run_id = db.insert_run(
